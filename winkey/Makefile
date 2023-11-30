@@ -2,14 +2,16 @@ NAME = winkey.exe
 
 DIR_SRCS = srcs
 DIR_OBJS = objs
-DIR_INCLUDES = includes
+DIR_INCLUDES = incs
 
-SRCS =	$(DIR_SRCS)\main.cpp
+SRCS =	$(DIR_SRCS)\main.cpp \
+		$(DIR_SRCS)\hooks.cpp \
+		$(DIR_SRCS)\log.cpp \
 
 OBJS = $(SRCS:.cpp=.obj)
 OBJS = $(OBJS:srcs=objs)
 
-CFLAGS = /Wall /WX
+CFLAGS = /Wall /WX /EHs
 
 all: create_dirs make_exe
 
@@ -23,12 +25,12 @@ make_exe: $(NAME)
 # Compile the sources
 {$(DIR_SRCS)}.cpp{$(DIR_OBJS)}.obj :
 		@echo Compiling...
-		cl /nologo /c /Fo$(DIR_OBJS)\ /I$(DIR_INCLUDES)\ $<
+		cl /nologo $(CFLAGS) /c /Fo$(DIR_OBJS)\ /I$(DIR_INCLUDES)\ $<
 
 # Link the files into an executable
 $(NAME): $(OBJS)
 		@echo Linking $(NAME)...
-		link /NOLOGO /out:$(NAME) $(OBJS) user32.lib
+		link /nologo /out:$(NAME) $(OBJS) user32.lib
 		@echo Executable $(NAME) created.
 
 # Create output directories

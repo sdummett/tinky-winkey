@@ -1,28 +1,30 @@
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
-#include <stdio.h>
-#include <windows.h>
-#pragma warning(disable:4820)
-#pragma warning(disable: 5045)
-#include <tlhelp32.h>
+
 #pragma comment(lib, "advapi32.lib")
 
-#define SVCNAME "tinky"
+#pragma warning(disable:4820)
+#pragma warning(disable: 5045)
 
-//=======//
+#include <stdio.h>
+#include <windows.h>
 #include <tchar.h>
 #include <strsafe.h>
+#include <tlhelp32.h>
 
-SERVICE_STATUS          gSvcStatus;
-SERVICE_STATUS_HANDLE   gSvcStatusHandle;
-HANDLE                  ghSvcStopEvent = NULL;
+#define SVC_NAME "tinky"
+#define SVC_ERROR 1
 
-VOID WINAPI SvcCtrlHandler(DWORD);
-VOID WINAPI SvcMain(DWORD, LPTSTR*);
+SERVICE_STATUS          g_svc_status;
+SERVICE_STATUS_HANDLE   g_svc_status_handle;
+HANDLE                  g_h_svc_stop_event = NULL;
 
-VOID ReportSvcStatus(DWORD, DWORD, DWORD);
-VOID SvcInit(DWORD, LPTSTR*);
-VOID SvcReportEvent(LPTSTR);
+VOID WINAPI svc_ctrl_handler(DWORD);
+VOID WINAPI svc_main(DWORD, LPTSTR*);
+
+VOID report_svc_status(DWORD, DWORD, DWORD);
+VOID svc_init(DWORD, LPTSTR*);
+VOID svc_report_event(LPTSTR);
 
 //
 // Purpose: 
@@ -37,32 +39,32 @@ VOID SvcReportEvent(LPTSTR);
 // Return value:
 //   None.
 //
-VOID WINAPI svc_main(DWORD dwArgc, LPTSTR* lpszArgv)
+static VOID WINAPI svc_main(DWORD argc, LPTSTR* argv)
 {
     // Register the handler function for the service
 
-    gSvcStatusHandle = RegisterServiceCtrlHandler(
-        SVCNAME,
-        SvcCtrlHandler);
+    g_svc_status_handle = RegisterServiceCtrlHandler(
+        SVC_NAME,
+        svc_ctrl_handler);
 
-    if (!gSvcStatusHandle)
+    if (!g_svc_status_handle)
     {
-        SvcReportEvent(TEXT("RegisterServiceCtrlHandler"));
+        svc_report_event(TEXT("RegisterServiceCtrlHandler"));
         return;
     }
 
     // These SERVICE_STATUS members remain as set here
 
-    gSvcStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    gSvcStatus.dwServiceSpecificExitCode = 0;
+    g_svc_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_svc_status.dwServiceSpecificExitCode = 0;
 
     // Report initial status to the SCM
 
-    ReportSvcStatus(SERVICE_START_PENDING, NO_ERROR, 3000);
+    report_svc_status(SERVICE_START_PENDING, NO_ERROR, 3000);
 
     // Perform service-specific initialization and work.
 
-    SvcInit(dwArgc, lpszArgv);
+    svc_init(argc, argv);
 }
 
 //
@@ -78,31 +80,31 @@ VOID WINAPI svc_main(DWORD dwArgc, LPTSTR* lpszArgv)
 // Return value:
 //   None
 //
-VOID SvcInit(DWORD dwArgc, LPTSTR* lpszArgv)
+static VOID svc_init(DWORD argc, LPTSTR* argv)
 {
     // TO_DO: Declare and set any required variables.
-    //   Be sure to periodically call ReportSvcStatus() with 
+    //   Be sure to periodically call report_svc_status() with 
     //   SERVICE_START_PENDING. If initialization fails, call
-    //   ReportSvcStatus with SERVICE_STOPPED.
+    //   report_svc_status with SERVICE_STOPPED.
 
-    // Create an event. The control handler function, SvcCtrlHandler,
+    // Create an event. The control handler function, svc_ctrl_handler,
     // signals this event when it receives the stop control code.
 
-    ghSvcStopEvent = CreateEvent(
+    g_h_svc_stop_event = CreateEvent(
         NULL,    // default security attributes
         TRUE,    // manual reset event
         FALSE,   // not signaled
         NULL);   // no name
 
-    if (ghSvcStopEvent == NULL)
+    if (g_h_svc_stop_event == NULL)
     {
-        ReportSvcStatus(SERVICE_STOPPED, GetLastError(), 0);
+        report_svc_status(SERVICE_STOPPED, GetLastError(), 0);
         return;
     }
 
     // Report running status when initialization is complete.
 
-    ReportSvcStatus(SERVICE_RUNNING, NO_ERROR, 0);
+    report_svc_status(SERVICE_RUNNING, NO_ERROR, 0);
 
     // TO_DO: Perform work until service stops.
 
@@ -110,9 +112,9 @@ VOID SvcInit(DWORD dwArgc, LPTSTR* lpszArgv)
     {
         // Check whether to stop the service.
 
-        WaitForSingleObject(ghSvcStopEvent, INFINITE);
+        WaitForSingleObject(g_h_svc_stop_event, INFINITE);
 
-        ReportSvcStatus(SERVICE_STOPPED, NO_ERROR, 0);
+        report_svc_status(SERVICE_STOPPED, NO_ERROR, 0);
         return;
     }
 }
@@ -130,29 +132,29 @@ VOID SvcInit(DWORD dwArgc, LPTSTR* lpszArgv)
 // Return value:
 //   None
 //
-VOID ReportSvcStatus(DWORD dwCurrentState,
-    DWORD dwWin32ExitCode,
-    DWORD dwWaitHint)
+static VOID report_svc_status(DWORD current_state,
+    DWORD win32_exit_code,
+    DWORD wait_hint)
 {
-    static DWORD dwCheckPoint = 1;
+    static DWORD checkpoint = 1;
 
     // Fill in the SERVICE_STATUS structure.
 
-    gSvcStatus.dwCurrentState = dwCurrentState;
-    gSvcStatus.dwWin32ExitCode = dwWin32ExitCode;
-    gSvcStatus.dwWaitHint = dwWaitHint;
+    g_svc_status.dwCurrentState = current_state;
+    g_svc_status.dwWin32ExitCode = win32_exit_code;
+    g_svc_status.dwWaitHint = wait_hint;
 
-    if (dwCurrentState == SERVICE_START_PENDING)
-        gSvcStatus.dwControlsAccepted = 0;
-    else gSvcStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
+    if (current_state == SERVICE_START_PENDING)
+        g_svc_status.dwControlsAccepted = 0;
+    else g_svc_status.dwControlsAccepted = SERVICE_ACCEPT_STOP;
 
-    if ((dwCurrentState == SERVICE_RUNNING) ||
-        (dwCurrentState == SERVICE_STOPPED))
-        gSvcStatus.dwCheckPoint = 0;
-    else gSvcStatus.dwCheckPoint = dwCheckPoint++;
+    if ((current_state == SERVICE_RUNNING) ||
+        (current_state == SERVICE_STOPPED))
+        g_svc_status.dwCheckPoint = 0;
+    else g_svc_status.dwCheckPoint = checkpoint++;
 
     // Report the status of the service to the SCM.
-    SetServiceStatus(gSvcStatusHandle, &gSvcStatus);
+    SetServiceStatus(g_svc_status_handle, &g_svc_status);
 }
 
 //
@@ -166,19 +168,19 @@ VOID ReportSvcStatus(DWORD dwCurrentState,
 // Return value:
 //   None
 //
-VOID WINAPI SvcCtrlHandler(DWORD dwCtrl)
+static VOID WINAPI svc_ctrl_handler(DWORD ctrl)
 {
     // Handle the requested control code. 
 
-    switch (dwCtrl)
+    switch (ctrl)
     {
     case SERVICE_CONTROL_STOP:
-        ReportSvcStatus(SERVICE_STOP_PENDING, NO_ERROR, 0);
+        report_svc_status(SERVICE_STOP_PENDING, NO_ERROR, 0);
 
         // Signal the service to stop.
 
-        SetEvent(ghSvcStopEvent);
-        ReportSvcStatus(gSvcStatus.dwCurrentState, NO_ERROR, 0);
+        SetEvent(g_h_svc_stop_event);
+        report_svc_status(g_svc_status.dwCurrentState, NO_ERROR, 0);
 
         return;
 
@@ -204,40 +206,39 @@ VOID WINAPI SvcCtrlHandler(DWORD dwCtrl)
 // Remarks:
 //   The service must have an entry in the Application event log.
 //
-#define SVC_ERROR 1
-VOID SvcReportEvent(LPTSTR szFunction)
+static VOID svc_report_event(LPTSTR function)
 {
-    HANDLE hEventSource;
-    LPCTSTR lpszStrings[2];
-    TCHAR Buffer[80];
+    HANDLE event_source;
+    LPCTSTR strings[2];
+    TCHAR buffer[80];
 
-    hEventSource = RegisterEventSource(NULL, SVCNAME);
+    event_source = RegisterEventSource(NULL, SVC_NAME);
 
-    if (NULL != hEventSource)
+    if (NULL != event_source)
     {
-        StringCchPrintf(Buffer, 80, TEXT("%s failed with %d"), szFunction, GetLastError());
+        StringCchPrintf(buffer, 80, TEXT("%s failed with %d"), function, GetLastError());
 
-        lpszStrings[0] = SVCNAME;
-        lpszStrings[1] = Buffer;
+        strings[0] = SVC_NAME;
+        strings[1] = buffer;
 
-        ReportEvent(hEventSource,        // event log handle
-            EVENTLOG_ERROR_TYPE, // event type
-            0,                   // event category
-            SVC_ERROR,           // event identifier
-            NULL,                // no security identifier
-            2,                   // size of lpszStrings array
-            0,                   // no binary data
-            lpszStrings,         // array of strings
-            NULL);               // no binary data
+        ReportEvent(event_source, // event log handle
+            EVENTLOG_ERROR_TYPE,  // event type
+            0,                    // event category
+            SVC_ERROR,            // event identifier
+            NULL,                 // no security identifier
+            2,                    // size of strings array
+            0,                    // no binary data
+            strings,              // array of strings
+            NULL);                // no binary data
 
-        DeregisterEventSource(hEventSource);
+        DeregisterEventSource(event_source);
     }
 }
 
 // Fonction pour obtenir le message d'erreur correspondant au code d'erreur
 static void print_error(const char *msg) {
     DWORD err = GetLastError();
-    LPSTR errorText = NULL;
+    LPSTR error_text = NULL;
 
     // Obtenir le message d'erreur associé au code d'erreur
     FormatMessage(
@@ -245,23 +246,23 @@ static void print_error(const char *msg) {
         NULL,
         err,
         MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        (LPSTR)&errorText,
+        (LPSTR)&error_text,
         0,
         NULL
     );
 
     // Afficher le message d'erreur
     fprintf(stderr, "%s\n", msg);
-    if (errorText) {
-        fprintf(stderr, "Reason: (%lu) %s", err, errorText);
+    if (error_text) {
+        fprintf(stderr, "Reason: (%lu) %s", err, error_text);
         // Libérer la mémoire allouée pour le message d'erreur
-        LocalFree(errorText);
+        LocalFree(error_text);
     }
 }
 
 static void install_service(void) {
-    TCHAR szUnquotedPath[MAX_PATH];
-    if (!GetModuleFileName(NULL, szUnquotedPath, MAX_PATH))
+    TCHAR unquoted_path[MAX_PATH];
+    if (!GetModuleFileName(NULL, unquoted_path, MAX_PATH))
     {
         printf("Cannot install service (%d)\n", GetLastError());
         return;
@@ -271,191 +272,196 @@ static void install_service(void) {
     // it is correctly interpreted. For example,
     // "d:\my share\myservice.exe" should be specified as
     // ""d:\my share\myservice.exe"".
-    TCHAR szPath[MAX_PATH];
-    StringCbPrintf(szPath, MAX_PATH, TEXT("\"%s\""), szUnquotedPath);
+    TCHAR path[MAX_PATH];
+    StringCbPrintf(path, MAX_PATH, TEXT("\"%s\""), unquoted_path);
 
-    SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
-    if (hSCM == NULL) {
+    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
+    if (scm == NULL) {
         print_error("Failed to open service manager");
         return;
     }
 
-    SC_HANDLE hService = CreateService(
-        hSCM,
-        SVCNAME,            // Nom du service
-        SVCNAME,            // Nom affiché
-        SERVICE_ALL_ACCESS, // Accès complet
-        SERVICE_WIN32_OWN_PROCESS,
-        SERVICE_DEMAND_START,
-        SERVICE_ERROR_NORMAL,
-        szPath,		   // Chemin du service
-        NULL, NULL, NULL, NULL, NULL);
+    SC_HANDLE service = CreateService(
+        scm,                          // Handle to the service control manager (SCM)
+        SVC_NAME,                     // Service name (short name used by the system)
+        SVC_NAME,                     // Display name (name shown in the services console)
+        SERVICE_ALL_ACCESS,           // Full access rights
+        SERVICE_WIN32_OWN_PROCESS,    // Service type: runs in its own process
+        SERVICE_DEMAND_START,         // Start type: manual start on demand
+        SERVICE_ERROR_NORMAL,         // Error control: log error and continue startup
+        path,                         // Path to the service executable
+        NULL,                         // Load order group (NULL if not part of a group)
+        NULL,                         // Tag ID (NULL if no unique tag is needed)
+        NULL,                         // Dependencies (NULL if no dependencies)
+        NULL,                         // Service start name (NULL for LocalSystem account)
+        NULL                          // Password (NULL if not required)
+    );
 
-    if (hService == NULL) {
+    if (service == NULL) {
         print_error("Failed to create service");
     }
     else {
         printf("Service installed successfully\n");
-        CloseServiceHandle(hService);
+        CloseServiceHandle(service);
     }
-    CloseServiceHandle(hSCM);
+    CloseServiceHandle(scm);
 }
 
-static void wait_status_stopped(SC_HANDLE schService, SC_HANDLE schSCManager) {
+static void wait_status_stopped(SC_HANDLE service, SC_HANDLE scm) {
     // Check the status in case the service is not stopped. 
 
-    SERVICE_STATUS_PROCESS ssStatus;
-    DWORD dwOldCheckPoint;
-    DWORD dwStartTickCount;
-    DWORD dwWaitTime;
-    DWORD dwBytesNeeded;
+    SERVICE_STATUS_PROCESS status;
+    DWORD old_checkpoint;
+    DWORD start_tick_count;
+    DWORD wait_time;
+    DWORD bytes_needed;
 
     if (!QueryServiceStatusEx(
-        schService,                     // handle to service 
+        service,                        // handle to service 
         SC_STATUS_PROCESS_INFO,         // information level
-        (LPBYTE)&ssStatus,             // address of structure
+        (LPBYTE)&status,                // address of structure
         sizeof(SERVICE_STATUS_PROCESS), // size of structure
-        &dwBytesNeeded))              // size needed if buffer is too small
+        &bytes_needed))                 // size needed if buffer is too small
     {
         printf("QueryServiceStatusEx failed (%d)\n", GetLastError());
-        CloseServiceHandle(schService);
-        CloseServiceHandle(schSCManager);
+        CloseServiceHandle(service);
+        CloseServiceHandle(scm);
         return;
     }
 
     // Check if the service is already running. It would be possible 
     // to stop the service here, but for simplicity this example just returns. 
 
-    if (ssStatus.dwCurrentState != SERVICE_STOPPED && ssStatus.dwCurrentState != SERVICE_STOP_PENDING)
+    if (status.dwCurrentState != SERVICE_STOPPED && status.dwCurrentState != SERVICE_STOP_PENDING)
     {
         printf("Cannot start the service because it is already running\n");
-        CloseServiceHandle(schService);
-        CloseServiceHandle(schSCManager);
+        CloseServiceHandle(service);
+        CloseServiceHandle(scm);
         return;
     }
 
     // Save the tick count and initial checkpoint.
 
-    dwStartTickCount = GetTickCount();
-    dwOldCheckPoint = ssStatus.dwCheckPoint;
+    start_tick_count = GetTickCount();
+    old_checkpoint = status.dwCheckPoint;
 
     // Wait for the service to stop before attempting to start it.
 
-    while (ssStatus.dwCurrentState == SERVICE_STOP_PENDING)
+    while (status.dwCurrentState == SERVICE_STOP_PENDING)
     {
         // Do not wait longer than the wait hint. A good interval is 
         // one-tenth of the wait hint but not less than 1 second  
         // and not more than 10 seconds. 
 
-        dwWaitTime = ssStatus.dwWaitHint / 10;
+        wait_time = status.dwWaitHint / 10;
 
-        if (dwWaitTime < 1000)
-            dwWaitTime = 1000;
-        else if (dwWaitTime > 10000)
-            dwWaitTime = 10000;
+        if (wait_time < 1000)
+            wait_time = 1000;
+        else if (wait_time > 10000)
+            wait_time = 10000;
 
-        Sleep(dwWaitTime);
+        Sleep(wait_time);
 
         // Check the status until the service is no longer stop pending. 
 
         if (!QueryServiceStatusEx(
-            schService,                     // handle to service 
+            service,                     // handle to service 
             SC_STATUS_PROCESS_INFO,         // information level
-            (LPBYTE)&ssStatus,             // address of structure
+            (LPBYTE)&status,             // address of structure
             sizeof(SERVICE_STATUS_PROCESS), // size of structure
-            &dwBytesNeeded))              // size needed if buffer is too small
+            &bytes_needed))              // size needed if buffer is too small
         {
             printf("QueryServiceStatusEx failed (%d)\n", GetLastError());
-            CloseServiceHandle(schService);
-            CloseServiceHandle(schSCManager);
+            CloseServiceHandle(service);
+            CloseServiceHandle(scm);
             return;
         }
 
-        if (ssStatus.dwCheckPoint > dwOldCheckPoint)
+        if (status.dwCheckPoint > old_checkpoint)
         {
             // Continue to wait and check.
 
-            dwStartTickCount = GetTickCount();
-            dwOldCheckPoint = ssStatus.dwCheckPoint;
+            start_tick_count = GetTickCount();
+            old_checkpoint = status.dwCheckPoint;
         }
         else
         {
-            if (GetTickCount() - dwStartTickCount > ssStatus.dwWaitHint)
+            if (GetTickCount() - start_tick_count > status.dwWaitHint)
             {
                 printf("Timeout waiting for service to stop\n");
-                CloseServiceHandle(schService);
-                CloseServiceHandle(schSCManager);
+                CloseServiceHandle(service);
+                CloseServiceHandle(scm);
                 return;
             }
         }
     }
 }
 
-static void wait_status_pending(SC_HANDLE schService, SC_HANDLE schSCManager) {
+static void wait_status_pending(SC_HANDLE service, SC_HANDLE scm) {
     // Check the status until the service is no longer start pending. 
 
-    SERVICE_STATUS_PROCESS ssStatus;
-    DWORD dwOldCheckPoint;
-    DWORD dwStartTickCount;
-    DWORD dwWaitTime;
-    DWORD dwBytesNeeded;
+    SERVICE_STATUS_PROCESS status;
+    DWORD old_checkpoint;
+    DWORD start_tick_count;
+    DWORD wait_time;
+    DWORD bytes_needed;
 
     if (!QueryServiceStatusEx(
-        schService,                     // handle to service 
+        service,                        // handle to service 
         SC_STATUS_PROCESS_INFO,         // info level
-        (LPBYTE)&ssStatus,             // address of structure
+        (LPBYTE)&status,                // address of structure
         sizeof(SERVICE_STATUS_PROCESS), // size of structure
-        &dwBytesNeeded))              // if buffer too small
+        &bytes_needed))                 // if buffer too small
     {
         printf("QueryServiceStatusEx failed (%d)\n", GetLastError());
-        CloseServiceHandle(schService);
-        CloseServiceHandle(schSCManager);
+        CloseServiceHandle(service);
+        CloseServiceHandle(scm);
         return;
     }
 
     // Save the tick count and initial checkpoint.
 
-    dwStartTickCount = GetTickCount();
-    dwOldCheckPoint = ssStatus.dwCheckPoint;
+    start_tick_count = GetTickCount();
+    old_checkpoint = status.dwCheckPoint;
 
-    while (ssStatus.dwCurrentState == SERVICE_START_PENDING)
+    while (status.dwCurrentState == SERVICE_START_PENDING)
     {
         // Do not wait longer than the wait hint. A good interval is 
         // one-tenth the wait hint, but no less than 1 second and no 
         // more than 10 seconds. 
 
-        dwWaitTime = ssStatus.dwWaitHint / 10;
+        wait_time = status.dwWaitHint / 10;
 
-        if (dwWaitTime < 1000)
-            dwWaitTime = 1000;
-        else if (dwWaitTime > 10000)
-            dwWaitTime = 10000;
+        if (wait_time < 1000)
+            wait_time = 1000;
+        else if (wait_time > 10000)
+            wait_time = 10000;
 
-        Sleep(dwWaitTime);
+        Sleep(wait_time);
 
         // Check the status again. 
 
         if (!QueryServiceStatusEx(
-            schService,             // handle to service 
+            service,             // handle to service 
             SC_STATUS_PROCESS_INFO, // info level
-            (LPBYTE)&ssStatus,             // address of structure
+            (LPBYTE)&status,             // address of structure
             sizeof(SERVICE_STATUS_PROCESS), // size of structure
-            &dwBytesNeeded))              // if buffer too small
+            &bytes_needed))              // if buffer too small
         {
             printf("QueryServiceStatusEx failed (%d)\n", GetLastError());
             break;
         }
 
-        if (ssStatus.dwCheckPoint > dwOldCheckPoint)
+        if (status.dwCheckPoint > old_checkpoint)
         {
             // Continue to wait and check.
 
-            dwStartTickCount = GetTickCount();
-            dwOldCheckPoint = ssStatus.dwCheckPoint;
+            start_tick_count = GetTickCount();
+            old_checkpoint = status.dwCheckPoint;
         }
         else
         {
-            if (GetTickCount() - dwStartTickCount > ssStatus.dwWaitHint)
+            if (GetTickCount() - start_tick_count > status.dwWaitHint)
             {
                 // No progress made within the wait hint.
                 break;
@@ -465,116 +471,115 @@ static void wait_status_pending(SC_HANDLE schService, SC_HANDLE schSCManager) {
 
     // Determine whether the service is running.
 
-    if (ssStatus.dwCurrentState == SERVICE_RUNNING)
+    if (status.dwCurrentState == SERVICE_RUNNING)
     {
         printf("Service started successfully.\n");
     }
     else
     {
         printf("Service not started. \n");
-        printf("  Current State: %d\n", ssStatus.dwCurrentState);
-        printf("  Exit Code: %d\n", ssStatus.dwWin32ExitCode);
-        printf("  Check Point: %d\n", ssStatus.dwCheckPoint);
-        printf("  Wait Hint: %d\n", ssStatus.dwWaitHint);
+        printf("  Current State: %d\n", status.dwCurrentState);
+        printf("  Exit Code: %d\n", status.dwWin32ExitCode);
+        printf("  Check Point: %d\n", status.dwCheckPoint);
+        printf("  Wait Hint: %d\n", status.dwWaitHint);
     }
 }
 
 static void start_service(void) {
-    //SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
-    SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
-    if (hSCM == NULL) {
+    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (scm == NULL) {
         print_error("Failed to open service manager");
         return;
     }
 
-    SC_HANDLE hService = OpenService(hSCM, SVCNAME, SERVICE_ALL_ACCESS);
-    if (hService == NULL) {
+    SC_HANDLE service = OpenService(scm, SVC_NAME, SERVICE_ALL_ACCESS);
+    if (service == NULL) {
         print_error("Failed to open service");
-        CloseServiceHandle(hSCM);
+        CloseServiceHandle(scm);
         return;
     }
 
-	wait_status_stopped(hService, hSCM);
+	wait_status_stopped(service, scm);
 
-    if (!StartService(hService, 0, NULL)) {
+    if (!StartService(service, 0, NULL)) {
         print_error("Failed to start service");
     }
     else {
         printf("Service start pending...\n");
     }
 
-	wait_status_pending(hService, hSCM);
+	wait_status_pending(service, scm);
 
-    CloseServiceHandle(hService);
-    CloseServiceHandle(hSCM);
+    CloseServiceHandle(service);
+    CloseServiceHandle(scm);
 }
 
 static void stop_service(void) {
-    SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
-    if (hSCM == NULL) {
+    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+    if (scm == NULL) {
         print_error("Failed to open service manager");
         return;
     }
 
-    SC_HANDLE hService = OpenService(hSCM, SVCNAME, SERVICE_STOP);
-    if (hService == NULL) {
+    SC_HANDLE service = OpenService(scm, SVC_NAME, SERVICE_STOP);
+    if (service == NULL) {
         print_error("Failed to open service");
-        CloseServiceHandle(hSCM);
+        CloseServiceHandle(scm);
         return;
     }
 
     SERVICE_STATUS status;
-    if (!ControlService(hService, SERVICE_CONTROL_STOP, &status)) {
+    if (!ControlService(service, SERVICE_CONTROL_STOP, &status)) {
         print_error("Failed to stop service");
     }
     else {
         printf("Service stopped successfully\n");
     }
 
-    CloseServiceHandle(hService);
-    CloseServiceHandle(hSCM);
+    CloseServiceHandle(service);
+    CloseServiceHandle(scm);
 }
 
 static void delete_service(void) {
-    SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
-    if (hSCM == NULL) {
+    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
+    if (scm == NULL) {
         print_error("Failed to open service manager");
         return;
     }
 
-    SC_HANDLE hService = OpenService(hSCM, SVCNAME, DELETE);
-    if (hService == NULL) {
+    SC_HANDLE service = OpenService(scm, SVC_NAME, DELETE);
+    if (service == NULL) {
         print_error("Failed to open service");
-        CloseServiceHandle(hSCM);
+        CloseServiceHandle(scm);
         return;
     }
 
-    if (!DeleteService(hService)) {
+    if (!DeleteService(service)) {
         print_error("Failed to delete service");
     }
     else {
         printf("Service deleted successfully\n");
     }
 
-    CloseServiceHandle(hService);
-    CloseServiceHandle(hSCM);
+    CloseServiceHandle(service);
+    CloseServiceHandle(scm);
 }
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        SERVICE_TABLE_ENTRY DispatchTable[] =
+        SERVICE_TABLE_ENTRY dispatch_table[] =
         {
-            { SVCNAME, (LPSERVICE_MAIN_FUNCTION)svc_main },
+            { SVC_NAME, (LPSERVICE_MAIN_FUNCTION)svc_main },
             { NULL, NULL }
         };
 
         // This call returns when the service has stopped. 
         // The process should simply terminate when the call returns.
 
-        if (!StartServiceCtrlDispatcher(DispatchTable))
+        if (!StartServiceCtrlDispatcher(dispatch_table))
         {
 			print_error("Failed StartServiceCtrlDispatcher");
-            SvcReportEvent(TEXT("StartServiceCtrlDispatcher"));
+            svc_report_event(TEXT("StartServiceCtrlDispatcher"));
         }
         return 0;
     }

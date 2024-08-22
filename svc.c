@@ -3,8 +3,12 @@
 
 #pragma comment(lib, "advapi32.lib")
 
-#pragma warning(disable:4820)
+// Disables warning about Spectre mitigation
+// code insertion for memory loads
 #pragma warning(disable: 5045)
+// Disables warning about functions marked
+// for inlining that are not actually inlined by the compiler
+#pragma warning(disable: 4710)
 
 #include <stdio.h>
 #include <windows.h>
@@ -21,13 +25,13 @@ SERVICE_STATUS_HANDLE   g_svc_status_handle;
 HANDLE                  g_h_svc_stop_event = NULL;
 HANDLE g_h_process = NULL; // Handle global pour le processus
 
-VOID WINAPI svc_ctrl_handler(DWORD);
-VOID WINAPI svc_main(DWORD, LPTSTR*);
+static VOID WINAPI svc_ctrl_handler(DWORD);
+static VOID WINAPI svc_main(DWORD, LPTSTR*);
 
-VOID report_svc_status(DWORD, DWORD, DWORD);
-VOID svc_init(DWORD, LPTSTR*);
-VOID svc_report_event(LPTSTR);
-void print_error(const char* msg);
+static VOID report_svc_status(DWORD, DWORD, DWORD);
+static VOID svc_init(DWORD, LPTSTR*);
+static VOID svc_report_event(LPTSTR);
+static void print_error(const char* msg);
 
 //
 // Purpose: 
@@ -142,7 +146,7 @@ static BOOL get_winlogon_pid(DWORD* pProcessId)
     return FALSE;
 }
 
-static BOOL impersonate_winlogon()
+static BOOL impersonate_winlogon(void)
 {
     DWORD winlogon_pid = 0;
 
@@ -204,6 +208,7 @@ static BOOL impersonate_winlogon()
 //
 static VOID svc_init(DWORD argc, LPTSTR* argv)
 {
+	(void)argc, (void)argv;
     // TO_DO: Declare and set any required variables.
     //   Be sure to periodically call report_svc_status() with 
     //   SERVICE_START_PENDING. If initialization fails, call
@@ -388,7 +393,7 @@ static void install_service(void) {
     TCHAR unquoted_path[MAX_PATH];
     if (!GetModuleFileName(NULL, unquoted_path, MAX_PATH))
     {
-        printf("Cannot install service (%d)\n", GetLastError());
+        printf("Cannot install service (%ld)\n", GetLastError());
         return;
     }
 
@@ -447,7 +452,7 @@ static void wait_status_stopped(SC_HANDLE service, SC_HANDLE scm) {
         sizeof(SERVICE_STATUS_PROCESS), // size of structure
         &bytes_needed))                 // size needed if buffer is too small
     {
-        printf("QueryServiceStatusEx failed (%d)\n", GetLastError());
+        printf("QueryServiceStatusEx failed (%ld)\n", GetLastError());
         CloseServiceHandle(service);
         CloseServiceHandle(scm);
         return;
@@ -495,7 +500,7 @@ static void wait_status_stopped(SC_HANDLE service, SC_HANDLE scm) {
             sizeof(SERVICE_STATUS_PROCESS), // size of structure
             &bytes_needed))              // size needed if buffer is too small
         {
-            printf("QueryServiceStatusEx failed (%d)\n", GetLastError());
+            printf("QueryServiceStatusEx failed (%ld)\n", GetLastError());
             CloseServiceHandle(service);
             CloseServiceHandle(scm);
             return;
@@ -537,7 +542,7 @@ static void wait_status_pending(SC_HANDLE service, SC_HANDLE scm) {
         sizeof(SERVICE_STATUS_PROCESS), // size of structure
         &bytes_needed))                 // if buffer too small
     {
-        printf("QueryServiceStatusEx failed (%d)\n", GetLastError());
+        printf("QueryServiceStatusEx failed (%ld)\n", GetLastError());
         CloseServiceHandle(service);
         CloseServiceHandle(scm);
         return;
@@ -572,7 +577,7 @@ static void wait_status_pending(SC_HANDLE service, SC_HANDLE scm) {
             sizeof(SERVICE_STATUS_PROCESS), // size of structure
             &bytes_needed))              // if buffer too small
         {
-            printf("QueryServiceStatusEx failed (%d)\n", GetLastError());
+            printf("QueryServiceStatusEx failed (%ld)\n", GetLastError());
             break;
         }
 
@@ -602,10 +607,10 @@ static void wait_status_pending(SC_HANDLE service, SC_HANDLE scm) {
     else
     {
         printf("Service not started. \n");
-        printf("  Current State: %d\n", status.dwCurrentState);
-        printf("  Exit Code: %d\n", status.dwWin32ExitCode);
-        printf("  Check Point: %d\n", status.dwCheckPoint);
-        printf("  Wait Hint: %d\n", status.dwWaitHint);
+        printf("  Current State: %ld\n", status.dwCurrentState);
+        printf("  Exit Code: %ld\n", status.dwWin32ExitCode);
+        printf("  Check Point: %ld\n", status.dwCheckPoint);
+        printf("  Wait Hint: %ld\n", status.dwWaitHint);
     }
 }
 

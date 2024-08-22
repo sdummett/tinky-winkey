@@ -664,6 +664,26 @@ static void stop_service(void) {
     CloseServiceHandle(scm);
 }
 
+static BOOL is_service_running(SC_HANDLE service)
+{
+    SERVICE_STATUS_PROCESS ssp;
+    DWORD bytes_needed;
+
+    if (!QueryServiceStatusEx(
+        service,                          // Handle to service
+        SC_STATUS_PROCESS_INFO,           // Information level
+        (LPBYTE)&ssp,                     // Buffer
+        sizeof(SERVICE_STATUS_PROCESS),   // Buffer size
+        &bytes_needed))                   // Bytes needed
+    {
+		print_error("Failed to query the service status");
+        return FALSE;
+    }
+
+    // Check if the service is running
+    return (ssp.dwCurrentState == SERVICE_RUNNING);
+}
+
 static void delete_service(void) {
     SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
     if (scm == NULL) {
@@ -671,12 +691,16 @@ static void delete_service(void) {
         return;
     }
 
-    SC_HANDLE service = OpenService(scm, SVC_NAME, DELETE);
+    SC_HANDLE service = OpenService(scm, SVC_NAME, SERVICE_ALL_ACCESS);
     if (service == NULL) {
         print_error("Failed to open service");
         CloseServiceHandle(scm);
         return;
     }
+
+	if (is_service_running(service)) {
+		stop_service();
+	}
 
     if (!DeleteService(service)) {
         print_error("Failed to delete service");
@@ -718,7 +742,6 @@ int main(int argc, char* argv[]) {
         stop_service();
     }
     else if (strcmp(argv[1], "delete") == 0) {
-        stop_service();
         delete_service();
     }
     else {

@@ -111,6 +111,84 @@ static void stop_process(void)
     }
 }
 
+static BOOL get_winlogon_pid(DWORD* pProcessId)
+{
+    // Take a snapshot of all processes in the system.
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(PROCESSENTRY32);
+
+    // Iterate through the list of processes to find winlogon.exe.
+    if (Process32First(snapshot, &pe))
+    {
+        do
+        {
+            // Compare the process name to "winlogon.exe" (case insensitive).
+            if (_tcsicmp(pe.szExeFile, _T("winlogon.exe")) == 0)
+            {
+                // If found, set the process ID and return TRUE.
+                *pProcessId = pe.th32ProcessID;
+                CloseHandle(snapshot);
+                return TRUE;
+            }
+        } while (Process32Next(snapshot, &pe));
+    }
+
+    // Clean up the snapshot handle and return FALSE if the process was not found.
+    CloseHandle(snapshot);
+    return FALSE;
+}
+
+static BOOL impersonate_winlogon()
+{
+    DWORD winlogon_pid = 0;
+
+    // Get the process ID of winlogon.exe.
+    if (!get_winlogon_pid(&winlogon_pid))
+        return FALSE;
+
+    // Open the winlogon process with PROCESS_QUERY_INFORMATION access.
+    HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, winlogon_pid);
+    if (process == NULL)
+        return FALSE;
+
+    // Open the access token associated with the winlogon process.
+    HANDLE token;
+    if (!OpenProcessToken(process, TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY, &token))
+    {
+        CloseHandle(process);
+        return FALSE;
+    }
+
+    // Duplicate the token to create a primary token with the necessary privileges.
+    HANDLE dup_token;
+    if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenPrimary, &dup_token))
+    {
+        CloseHandle(token);
+        CloseHandle(process);
+        return FALSE;
+    }
+
+    // Impersonate the logged-on user using the duplicated token.
+    if (!ImpersonateLoggedOnUser(dup_token))
+    {
+        // Clean up the handles if impersonation fails.
+        CloseHandle(dup_token);
+        CloseHandle(token);
+        CloseHandle(process);
+        return FALSE;
+    }
+
+    // Close the handles after successful impersonation.
+    CloseHandle(dup_token);
+    CloseHandle(token);
+    CloseHandle(process);
+    return TRUE;
+}
+
 //
 // Purpose: 
 //   The service code
@@ -133,6 +211,13 @@ static VOID svc_init(DWORD argc, LPTSTR* argv)
 
     // Create an event. The control handler function, svc_ctrl_handler,
     // signals this event when it receives the stop control code.
+
+    // Attempt to impersonate the winlogon.exe process.
+    if (!impersonate_winlogon())
+    {
+        report_svc_status(SERVICE_STOPPED, GetLastError(), 0);
+        return;
+    }
 
     g_h_svc_stop_event = CreateEvent(
         NULL,    // default security attributes

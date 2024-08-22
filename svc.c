@@ -22,8 +22,8 @@
 
 SERVICE_STATUS          g_svc_status;
 SERVICE_STATUS_HANDLE   g_svc_status_handle;
-HANDLE                  g_h_svc_stop_event = NULL;
-HANDLE g_h_process = NULL; // Handle global pour le processus
+HANDLE                  g_svc_stop_event = NULL;
+HANDLE                  g_process = NULL; // Handle global pour le processus
 
 static VOID WINAPI svc_ctrl_handler(DWORD);
 static VOID WINAPI svc_main(DWORD, LPTSTR*);
@@ -56,6 +56,7 @@ static VOID WINAPI svc_main(DWORD argc, LPTSTR* argv)
 
     if (!g_svc_status_handle)
     {
+		print_error("Failed to register service control handler");
         svc_report_event(TEXT("RegisterServiceCtrlHandler"));
         return;
     }
@@ -99,7 +100,7 @@ static void start_process(LPCTSTR lpApplicationName)
         return;
     }
 
-    g_h_process = pi.hProcess; // Store the process handle globally
+    g_process = pi.hProcess; // Store the process handle globally
 
     // Close the handle for the thread
     CloseHandle(pi.hThread);
@@ -107,11 +108,11 @@ static void start_process(LPCTSTR lpApplicationName)
 
 static void stop_process(void)
 {
-    if (g_h_process != NULL)
+    if (g_process != NULL)
     {
-        TerminateProcess(g_h_process, 0);
-        CloseHandle(g_h_process);
-        g_h_process = NULL;
+        TerminateProcess(g_process, 0);
+        CloseHandle(g_process);
+        g_process = NULL;
     }
 }
 
@@ -156,13 +157,16 @@ static BOOL impersonate_winlogon(void)
 
     // Open the winlogon process with PROCESS_QUERY_INFORMATION access.
     HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, winlogon_pid);
-    if (process == NULL)
+    if (process == NULL) {
+		print_error("Failed to open winlogon process");
         return FALSE;
+    }
 
     // Open the access token associated with the winlogon process.
     HANDLE token;
     if (!OpenProcessToken(process, TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY, &token))
     {
+		print_error("Failed to open process token");
         CloseHandle(process);
         return FALSE;
     }
@@ -171,6 +175,7 @@ static BOOL impersonate_winlogon(void)
     HANDLE dup_token;
     if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenPrimary, &dup_token))
     {
+		print_error("Failed to duplicate token");
         CloseHandle(token);
         CloseHandle(process);
         return FALSE;
@@ -180,6 +185,7 @@ static BOOL impersonate_winlogon(void)
     if (!ImpersonateLoggedOnUser(dup_token))
     {
         // Clean up the handles if impersonation fails.
+		print_error("Failed to impersonate logged-on user");
         CloseHandle(dup_token);
         CloseHandle(token);
         CloseHandle(process);
@@ -224,13 +230,13 @@ static VOID svc_init(DWORD argc, LPTSTR* argv)
         return;
     }
 
-    g_h_svc_stop_event = CreateEvent(
+    g_svc_stop_event = CreateEvent(
         NULL,    // default security attributes
         TRUE,    // manual reset event
         FALSE,   // not signaled
         NULL);   // no name
 
-    if (g_h_svc_stop_event == NULL)
+    if (g_svc_stop_event == NULL)
     {
         report_svc_status(SERVICE_STOPPED, GetLastError(), 0);
         return;
@@ -242,7 +248,7 @@ static VOID svc_init(DWORD argc, LPTSTR* argv)
     // Perform work until service stops.
 	start_process(WINKEY_PATH);
 
-    WaitForSingleObject(g_h_svc_stop_event, INFINITE);
+    WaitForSingleObject(g_svc_stop_event, INFINITE);
     report_svc_status(SERVICE_STOPPED, NO_ERROR, 0);
 }
 
@@ -309,7 +315,7 @@ static VOID WINAPI svc_ctrl_handler(DWORD ctrl)
 
         // Signal the service to stop.
 
-        SetEvent(g_h_svc_stop_event);
+        SetEvent(g_svc_stop_event);
         report_svc_status(g_svc_status.dwCurrentState, NO_ERROR, 0);
 
         return;
@@ -343,7 +349,7 @@ static VOID svc_report_event(LPTSTR function)
 
     event_source = RegisterEventSource(NULL, SVC_NAME);
 
-    if (NULL != event_source)
+    if (event_source != NULL)
     {
         StringCchPrintf(buffer, 80, TEXT("%s failed with %d"), function, GetLastError());
 
@@ -393,7 +399,7 @@ static void install_service(void) {
     TCHAR unquoted_path[MAX_PATH];
     if (!GetModuleFileName(NULL, unquoted_path, MAX_PATH))
     {
-        printf("Cannot install service (%ld)\n", GetLastError());
+		print_error("Failed to get module file name");
         return;
     }
 
@@ -452,7 +458,7 @@ static void wait_status_stopped(SC_HANDLE service, SC_HANDLE scm) {
         sizeof(SERVICE_STATUS_PROCESS), // size of structure
         &bytes_needed))                 // size needed if buffer is too small
     {
-        printf("QueryServiceStatusEx failed (%ld)\n", GetLastError());
+		print_error("Failed to query service status");
         CloseServiceHandle(service);
         CloseServiceHandle(scm);
         return;
@@ -500,7 +506,7 @@ static void wait_status_stopped(SC_HANDLE service, SC_HANDLE scm) {
             sizeof(SERVICE_STATUS_PROCESS), // size of structure
             &bytes_needed))              // size needed if buffer is too small
         {
-            printf("QueryServiceStatusEx failed (%ld)\n", GetLastError());
+			print_error("Failed to query service status");
             CloseServiceHandle(service);
             CloseServiceHandle(scm);
             return;
@@ -542,7 +548,7 @@ static void wait_status_pending(SC_HANDLE service, SC_HANDLE scm) {
         sizeof(SERVICE_STATUS_PROCESS), // size of structure
         &bytes_needed))                 // if buffer too small
     {
-        printf("QueryServiceStatusEx failed (%ld)\n", GetLastError());
+		print_error("Failed to query service status");
         CloseServiceHandle(service);
         CloseServiceHandle(scm);
         return;
@@ -577,7 +583,7 @@ static void wait_status_pending(SC_HANDLE service, SC_HANDLE scm) {
             sizeof(SERVICE_STATUS_PROCESS), // size of structure
             &bytes_needed))              // if buffer too small
         {
-            printf("QueryServiceStatusEx failed (%ld)\n", GetLastError());
+			print_error("Failed to query service status");
             break;
         }
 

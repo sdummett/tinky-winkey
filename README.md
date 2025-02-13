@@ -18,7 +18,7 @@ This project provides a Windows service and keylogger developed in C. The servic
 
 - **Compiler**: CL
 - **Build Tool**: NMAKE
-- **OS**: Windows 10 or newer
+- **OS**: Windows 11 but should work on Windows 10
 
 ## Quick Start
 

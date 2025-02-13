@@ -22,27 +22,32 @@ This project provides a Windows service and keylogger developed in C. The servic
 
 ## Quick Start
 
-1. **Install the Service**:
+1. **Compile the Project**: Open a Developer Command Prompt and run:
+   ```powershell
+   nmake
+   ```
+
+3. **Install the Service**:
    ```powershell
    .\svc.exe install
    ```
 
-2. **Start the Service**:
+4. **Start the Service**:
    ```powershell
    .\svc.exe start
    ```
 
-3. **Check Keylogger Status**:
+5. **Check Keylogger Status**:
    ```powershell
    tasklist | Select-String "winkey"
    ```
 
-4. **Stop the Service**:
+6. **Stop the Service**:
    ```powershell
    .\svc.exe stop
    ```
 
-5. **Remove the Service**:
+7. **Remove the Service**:
    ```powershell
    .\svc.exe delete
    ```

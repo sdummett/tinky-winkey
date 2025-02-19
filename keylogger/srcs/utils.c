@@ -1,57 +1,52 @@
 #include "winkey.h"
 
-// Function to remove brackets from a string
-void remove_brackets(char* str)
+// Remove bracket characters from a string
+void remove_brackets(char *str)
 {
-    char* src = str;
-    char* dest = str;
+	char *src = str;
+	char *dest = str;
 
-    while (*src) {
-        if (*src != '[' && *src != ']') {
-            *dest++ = *src;
-        }
-        src++;
-    }
-    *dest = '\0';
+	while (*src)
+	{
+		if (*src != '[' && *src != ']')
+		{
+			*dest++ = *src;
+		}
+		src++;
+	}
+	*dest = '\0';
 }
 
-const char* get_character(DWORD vkCode, DWORD scanCode, BYTE* keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn)
+const char *get_character(DWORD vkCode, DWORD scanCode, BYTE *keyboardState, BOOL isShiftPressed, BOOL isCapsLockOn)
 {
-    static char key[2] = { 0 };
+	static char key[2] = {0};
+	HKL layout = GetKeyboardLayout(0);
 
-    // Get the keyboard layout for the current thread.
-    HKL keyboardLayout = GetKeyboardLayout(0);
+	// Translate virtual key to Unicode
+	int result = ToUnicodeEx(vkCode, scanCode, keyboardState, (LPWSTR)key, sizeof(key), 0, layout);
 
-    // Use ToUnicodeEx to translate the virtual key code and scan code into a Unicode character.
-    // This function takes into account the keyboard state (e.g., Shift, Caps Lock) and the
-    // keyboard layout, which is important for handling different locales and layouts.
-    int result = ToUnicodeEx(vkCode, scanCode, keyboardState, (LPWSTR)key, sizeof(key), 0, keyboardLayout);
-
-    if (result == 1) {
-        // If ToUnicodeEx successfully translated the key (returns 1 when exactly one character is generated),
-        // handle the case of uppercase and lowercase conversion based on Shift and Caps Lock states.
-
-        if ((isShiftPressed && !isCapsLockOn) || (!isShiftPressed && isCapsLockOn)) {
-            // If either Shift is pressed without Caps Lock, or Caps Lock is on without Shift,
-            // convert the character to uppercase.
-            key[0] = (char)toupper(key[0]);
-        }
-        else if (!isShiftPressed && !isCapsLockOn) {
-            // If neither Shift nor Caps Lock is active, ensure the character is lowercase.
-            key[0] = (char)tolower(key[0]);
-        }
-		key[1] = '\0';  // Null-terminate the string.
+	if (result == 1)
+	{
+		// Adjust case according to Shift/Caps
+		if ((isShiftPressed && !isCapsLockOn) || (!isShiftPressed && isCapsLockOn))
+		{
+			key[0] = (char)toupper(key[0]);
+		}
+		else if (!isShiftPressed && !isCapsLockOn)
+		{
+			key[0] = (char)tolower(key[0]);
+		}
+		key[1] = '\0';
 		printf("%s\n", key);
-    }
-    else {
-        // If ToUnicodeEx did not return exactly one character, return a placeholder for an unknown key.
-        return "[Unknown Key]";
-    }
+	}
+	else
+	{
+		return "[Unknown Key]";
+	}
 
-    return key;
+	return key;
 }
 
-// Function to get the name of special keys (e.g., F1, Tab, Enter)
 const char* get_special_key_name(DWORD vkCode)
 {
     switch (vkCode) {
@@ -139,7 +134,7 @@ const char* get_special_key_name(DWORD vkCode)
     case VK_OEM_4: return "[OEM 4 ([{)]";
     case VK_OEM_5: return "[OEM 5 (\\|)]";
     case VK_OEM_6: return "[OEM 6 (]}])]";
-    case VK_OEM_7: return "[OEM 7 ('\") ]";
+    case VK_OEM_7: return "[OEM 7 ('\")]";
     case VK_OEM_8: return "[OEM 8]";
     case VK_OEM_102: return "[OEM 102 (<|>)]";
     default: return "[Unknown Key]";
